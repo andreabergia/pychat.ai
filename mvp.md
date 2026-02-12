@@ -78,6 +78,14 @@ The experience stays close to a traditional REPL.
 
 ## Technical Architecture
 
+### Rust Host Application
+
+**Rust-based host**: the application is written in Rust and embeds the Python interpreter via PyO3.
+
+**Reasoning**: Creates a clear security and architectural boundary between the LLM and the Python runtime. Rust provides memory safety, handles the capability system and orchestration, and enforces read-only guarantees before delegating to Python.
+
+---
+
 ### CLI Experience
 
 **Minimal REPL**: single prompt, simple mode toggle between Python and assistant.
