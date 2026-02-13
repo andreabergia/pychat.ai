@@ -4,6 +4,7 @@ use rustyline::error::ReadlineError;
 use rustyline::{
     Cmd, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, KeyEvent, RepeatCount,
 };
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,7 @@ pub fn run_repl(state: &mut AppState) -> Result<()> {
 
                 if should_toggle {
                     state.mode = toggle_mode(state.mode);
+                    repaint_previous_line()?;
                 }
                 continue;
             }
@@ -110,6 +112,15 @@ pub fn run_repl(state: &mut AppState) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn repaint_previous_line() -> Result<()> {
+    // readline writes a newline after interrupt; move up and clear it so the next
+    // prompt redraw keeps the user on the same logical line.
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(b"\x1b[1A\x1b[2K\r")?;
+    stdout.flush()?;
     Ok(())
 }
 
