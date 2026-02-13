@@ -88,3 +88,11 @@ Embedded Python Interpreter (persistent session, state, execution)
 - `reqwest` - HTTP client
 - `serde`, `serde_json` - Serialization
 - Provider SDK (e.g., `async-openai`)
+
+## Operative rules
+
+<important>These rules must **always be followed**
+
+- We use conventional commits format
+- Keep the commit messages short and focused
+- Always run tests, formatter, and linter before declaring a task "done"
