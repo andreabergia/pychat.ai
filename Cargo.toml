@@ -1,0 +1,12 @@
+[package]
+name = "pyaichat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+rustyline = "14"
+
+[dev-dependencies]
+expectrl = "0.7"
