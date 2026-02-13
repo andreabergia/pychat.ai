@@ -52,6 +52,48 @@ def _pyaichat_eval_expr(expr):
         }
 
 
+def _pyaichat_get_type(expr):
+    try:
+        value = eval(expr, globals(), globals())
+        value_type = type(value)
+        name = value_type.__name__
+        module = getattr(value_type, "__module__", "")
+        qualified_name = getattr(value_type, "__qualname__", name)
+        qualified = qualified_name if not module else f"{module}.{qualified_name}"
+        return {
+            "ok": True,
+            "name": name,
+            "module": module,
+            "qualified": qualified,
+        }
+    except BaseException as exc:
+        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
+
+
+def _pyaichat_get_repr(expr):
+    try:
+        value = eval(expr, globals(), globals())
+        return {"ok": True, "repr": repr(value)}
+    except BaseException as exc:
+        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
+
+
+def _pyaichat_get_dir(expr):
+    try:
+        value = eval(expr, globals(), globals())
+        return {"ok": True, "members": sorted(dir(value))}
+    except BaseException as exc:
+        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
+
+
+def _pyaichat_get_doc(expr):
+    try:
+        value = eval(expr, globals(), globals())
+        return {"ok": True, "doc": getattr(value, "__doc__", None)}
+    except BaseException as exc:
+        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
+
+
 def _pyaichat_run_user_input(line):
     try:
         compile(line, "<stdin>", "eval")
@@ -68,6 +110,8 @@ def _pyaichat_list_globals():
     entries = []
     for name, value in globals().items():
         if name == "__builtins__":
+            continue
+        if name.startswith("_pyaichat_"):
             continue
         if name.startswith("__") and name.endswith("__"):
             continue

@@ -1,8 +1,14 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use pyo3::prelude::*;
 use pyo3::types::PyModuleMethods;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyModule, PyTuple, PyTupleMethods};
 use std::ffi::CString;
+
+use super::capabilities::{
+    CapabilityError, CapabilityProvider, CapabilityResult, DIR_MAX_MEMBERS, DOC_MAX_LEN, DirInfo,
+    DocInfo, EvalInfo, GlobalEntry, REPR_MAX_LEN, ReprInfo, TypeInfo, truncate_members,
+    truncate_text,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecResult {
@@ -15,13 +21,6 @@ pub struct EvalResult {
     pub value_repr: String,
     pub stdout: String,
     pub stderr: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct GlobalEntry {
-    pub name: String,
-    pub type_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +45,7 @@ pub struct PythonSession {
     main_module: Py<PyModule>,
 }
 
+#[allow(dead_code)]
 impl PythonSession {
     pub fn initialize() -> Result<Self> {
         Python::attach(|py| -> Result<Self> {
@@ -195,7 +195,7 @@ impl PythonSession {
         let dict = Self::cast_dict(result)?;
         Ok(dict
             .get_item("ok")?
-            .ok_or_else(|| anyhow::anyhow!("missing ok in helper result"))?
+            .ok_or_else(|| anyhow!("missing ok in helper result"))?
             .extract()?)
     }
 
@@ -203,7 +203,7 @@ impl PythonSession {
         let dict = Self::cast_dict(result)?;
         Ok(dict
             .get_item(key)?
-            .ok_or_else(|| anyhow::anyhow!("missing {key} in helper result"))?
+            .ok_or_else(|| anyhow!("missing {key} in helper result"))?
             .extract()?)
     }
 
@@ -211,7 +211,7 @@ impl PythonSession {
         let dict = Self::cast_dict(result)?;
         let exception = dict
             .get_item("exception")?
-            .ok_or_else(|| anyhow::anyhow!("missing exception in helper result"))?;
+            .ok_or_else(|| anyhow!("missing exception in helper result"))?;
         Self::any_to_exception(exception)
     }
 
@@ -220,15 +220,15 @@ impl PythonSession {
         Ok(ExceptionInfo {
             exc_type: dict
                 .get_item("exc_type")?
-                .ok_or_else(|| anyhow::anyhow!("missing exc_type"))?
+                .ok_or_else(|| anyhow!("missing exc_type"))?
                 .extract()?,
             message: dict
                 .get_item("message")?
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?
+                .ok_or_else(|| anyhow!("missing message"))?
                 .extract()?,
             traceback: dict
                 .get_item("traceback")?
-                .ok_or_else(|| anyhow::anyhow!("missing traceback"))?
+                .ok_or_else(|| anyhow!("missing traceback"))?
                 .extract()?,
         })
     }
@@ -236,26 +236,231 @@ impl PythonSession {
     fn cast_dict<'a>(value: &'a Bound<'a, pyo3::types::PyAny>) -> Result<&'a Bound<'a, PyDict>> {
         value
             .cast::<PyDict>()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))
+            .map_err(|err| anyhow!(err.to_string()))
     }
 
     #[allow(dead_code)]
     fn cast_list<'a>(value: &'a Bound<'a, pyo3::types::PyAny>) -> Result<&'a Bound<'a, PyList>> {
         value
             .cast::<PyList>()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))
+            .map_err(|err| anyhow!(err.to_string()))
     }
 
     #[allow(dead_code)]
     fn cast_tuple<'a>(value: &'a Bound<'a, pyo3::types::PyAny>) -> Result<&'a Bound<'a, PyTuple>> {
         value
             .cast::<PyTuple>()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))
+            .map_err(|err| anyhow!(err.to_string()))
+    }
+}
+
+impl PythonSession {
+    fn cap_internal(err: impl std::fmt::Display) -> CapabilityError {
+        CapabilityError::Internal(err.to_string())
+    }
+
+    fn cap_invalid_shape(msg: impl Into<String>) -> CapabilityError {
+        CapabilityError::InvalidResultShape(msg.into())
+    }
+
+    fn cap_result_ok(result: &Bound<'_, pyo3::types::PyAny>) -> CapabilityResult<bool> {
+        let dict = Self::cap_cast_dict(result)?;
+        let value = dict
+            .get_item("ok")
+            .map_err(Self::cap_internal)?
+            .ok_or_else(|| Self::cap_invalid_shape("missing ok in helper result"))?;
+        value.extract().map_err(Self::cap_internal)
+    }
+
+    fn cap_dict_string(
+        result: &Bound<'_, pyo3::types::PyAny>,
+        key: &str,
+    ) -> CapabilityResult<String> {
+        let dict = Self::cap_cast_dict(result)?;
+        let value = dict
+            .get_item(key)
+            .map_err(Self::cap_internal)?
+            .ok_or_else(|| Self::cap_invalid_shape(format!("missing {key} in helper result")))?;
+        value.extract().map_err(Self::cap_internal)
+    }
+
+    fn cap_dict_optional_string(
+        result: &Bound<'_, pyo3::types::PyAny>,
+        key: &str,
+    ) -> CapabilityResult<Option<String>> {
+        let dict = Self::cap_cast_dict(result)?;
+        let value = dict
+            .get_item(key)
+            .map_err(Self::cap_internal)?
+            .ok_or_else(|| Self::cap_invalid_shape(format!("missing {key} in helper result")))?;
+        if value.is_none() {
+            return Ok(None);
+        }
+
+        value
+            .extract()
+            .map(Some)
+            .map_err(|_| Self::cap_invalid_shape(format!("{key} must be string or None")))
+    }
+
+    fn cap_dict_string_list(
+        result: &Bound<'_, pyo3::types::PyAny>,
+        key: &str,
+    ) -> CapabilityResult<Vec<String>> {
+        let dict = Self::cap_cast_dict(result)?;
+        let value = dict
+            .get_item(key)
+            .map_err(Self::cap_internal)?
+            .ok_or_else(|| Self::cap_invalid_shape(format!("missing {key} in helper result")))?;
+        value
+            .extract()
+            .map_err(|_| Self::cap_invalid_shape(format!("{key} must be list[str]")))
+    }
+
+    fn cap_dict_exception(
+        result: &Bound<'_, pyo3::types::PyAny>,
+    ) -> CapabilityResult<ExceptionInfo> {
+        let dict = Self::cap_cast_dict(result)?;
+        let exception = dict
+            .get_item("exception")
+            .map_err(Self::cap_internal)?
+            .ok_or_else(|| Self::cap_invalid_shape("missing exception in helper result"))?;
+        Self::any_to_exception(exception)
+            .map_err(|err| Self::cap_invalid_shape(format!("invalid exception payload: {err}")))
+    }
+
+    fn cap_cast_dict<'a>(
+        value: &'a Bound<'a, pyo3::types::PyAny>,
+    ) -> CapabilityResult<&'a Bound<'a, PyDict>> {
+        value
+            .cast::<PyDict>()
+            .map_err(|err| Self::cap_invalid_shape(err.to_string()))
+    }
+}
+
+#[allow(dead_code)]
+impl CapabilityProvider for PythonSession {
+    fn list_globals(&self) -> CapabilityResult<Vec<GlobalEntry>> {
+        PythonSession::list_globals(self).map_err(Self::cap_internal)
+    }
+
+    fn get_type(&self, expr: &str) -> CapabilityResult<TypeInfo> {
+        Python::attach(|py| -> CapabilityResult<TypeInfo> {
+            let main = self.main_module.bind(py);
+            let result = Self::call_runtime_helper(main, "_pyaichat_get_type", (expr,))
+                .map_err(Self::cap_internal)?;
+            if !Self::cap_result_ok(&result)? {
+                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
+                    &result,
+                )?));
+            }
+
+            Ok(TypeInfo {
+                name: Self::cap_dict_string(&result, "name")?,
+                module: Self::cap_dict_string(&result, "module")?,
+                qualified: Self::cap_dict_string(&result, "qualified")?,
+            })
+        })
+    }
+
+    fn get_repr(&self, expr: &str) -> CapabilityResult<ReprInfo> {
+        Python::attach(|py| -> CapabilityResult<ReprInfo> {
+            let main = self.main_module.bind(py);
+            let result = Self::call_runtime_helper(main, "_pyaichat_get_repr", (expr,))
+                .map_err(Self::cap_internal)?;
+            if !Self::cap_result_ok(&result)? {
+                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
+                    &result,
+                )?));
+            }
+
+            let repr = Self::cap_dict_string(&result, "repr")?;
+            let (repr, truncated, original_len) = truncate_text(repr, REPR_MAX_LEN);
+            Ok(ReprInfo {
+                repr,
+                truncated,
+                original_len,
+            })
+        })
+    }
+
+    fn get_dir(&self, expr: &str) -> CapabilityResult<DirInfo> {
+        Python::attach(|py| -> CapabilityResult<DirInfo> {
+            let main = self.main_module.bind(py);
+            let result = Self::call_runtime_helper(main, "_pyaichat_get_dir", (expr,))
+                .map_err(Self::cap_internal)?;
+            if !Self::cap_result_ok(&result)? {
+                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
+                    &result,
+                )?));
+            }
+
+            let members = Self::cap_dict_string_list(&result, "members")?;
+            let (members, truncated, original_len) = truncate_members(members, DIR_MAX_MEMBERS);
+            Ok(DirInfo {
+                members,
+                truncated,
+                original_len,
+            })
+        })
+    }
+
+    fn get_doc(&self, expr: &str) -> CapabilityResult<DocInfo> {
+        Python::attach(|py| -> CapabilityResult<DocInfo> {
+            let main = self.main_module.bind(py);
+            let result = Self::call_runtime_helper(main, "_pyaichat_get_doc", (expr,))
+                .map_err(Self::cap_internal)?;
+            if !Self::cap_result_ok(&result)? {
+                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
+                    &result,
+                )?));
+            }
+
+            let doc = Self::cap_dict_optional_string(&result, "doc")?;
+            let (doc, truncated, original_len) = match doc {
+                Some(doc) => {
+                    let (doc, truncated, original_len) = truncate_text(doc, DOC_MAX_LEN);
+                    (Some(doc), truncated, original_len)
+                }
+                None => (None, false, 0),
+            };
+
+            Ok(DocInfo {
+                doc,
+                truncated,
+                original_len,
+            })
+        })
+    }
+
+    fn eval_expr(&self, expr: &str) -> CapabilityResult<EvalInfo> {
+        Python::attach(|py| -> CapabilityResult<EvalInfo> {
+            let main = self.main_module.bind(py);
+            let result = Self::call_runtime_helper(main, "_pyaichat_eval_expr", (expr,))
+                .map_err(Self::cap_internal)?;
+            if !Self::cap_result_ok(&result)? {
+                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
+                    &result,
+                )?));
+            }
+
+            Ok(EvalInfo {
+                value_repr: Self::cap_dict_string(&result, "value_repr")?,
+                stdout: Self::cap_dict_string(&result, "stdout")?,
+                stderr: Self::cap_dict_string(&result, "stderr")?,
+            })
+        })
+    }
+
+    fn get_last_exception(&self) -> CapabilityResult<Option<ExceptionInfo>> {
+        PythonSession::get_last_exception(self).map_err(Self::cap_internal)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::python::{CapabilityError, CapabilityProvider};
+
     use super::{PythonSession, UserRunResult};
 
     #[test]
@@ -324,6 +529,11 @@ mod tests {
         );
         assert!(!globals.iter().any(|entry| entry.name == "__builtins__"));
         assert!(!globals.iter().any(|entry| entry.name == "__name__"));
+        assert!(
+            !globals
+                .iter()
+                .any(|entry| entry.name.starts_with("_pyaichat_"))
+        );
     }
 
     #[test]
@@ -367,5 +577,93 @@ mod tests {
             .expect("get replaced exception")
             .expect("replaced exception exists");
         assert_eq!(replaced.exc_type, "NameError");
+    }
+
+    #[test]
+    fn capability_get_type_returns_name_module_and_qualified() {
+        let session = PythonSession::initialize().expect("python session");
+        let type_info = CapabilityProvider::get_type(&session, "[1, 2, 3]").expect("get type");
+        assert_eq!(type_info.name, "list");
+        assert_eq!(type_info.module, "builtins");
+        assert_eq!(type_info.qualified, "builtins.list");
+    }
+
+    #[test]
+    fn capability_get_repr_truncates_large_output() {
+        let session = PythonSession::initialize().expect("python session");
+        let repr_info = CapabilityProvider::get_repr(&session, "'x' * 5000").expect("get repr");
+        assert!(repr_info.truncated);
+        assert_eq!(repr_info.original_len, 5002);
+        assert_eq!(repr_info.repr.chars().count(), 4096);
+    }
+
+    #[test]
+    fn capability_get_dir_is_sorted_and_truncated() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code(
+                "class CustomDir:\n    def __dir__(self):\n        return [f'n{i:03}' for i in range(300, -1, -1)]\nobj = CustomDir()",
+            )
+            .expect("seed dir object");
+
+        let dir_info = CapabilityProvider::get_dir(&session, "obj").expect("get dir");
+        assert!(dir_info.truncated);
+        assert_eq!(dir_info.original_len, 301);
+        assert_eq!(dir_info.members.len(), 256);
+        assert!(dir_info.members.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(dir_info.members.first().expect("first member"), "n000");
+    }
+
+    #[test]
+    fn capability_get_doc_returns_none_when_missing() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("class NoDoc:\n    __doc__ = None\nobj = NoDoc()")
+            .expect("seed no doc object");
+
+        let doc_info = CapabilityProvider::get_doc(&session, "obj").expect("get doc");
+        assert!(!doc_info.truncated);
+        assert_eq!(doc_info.original_len, 0);
+        assert!(doc_info.doc.is_none());
+    }
+
+    #[test]
+    fn capability_get_doc_truncates_long_doc() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("class LongDoc:\n    __doc__ = 'd' * 5000\nobj = LongDoc()")
+            .expect("seed long doc object");
+
+        let doc_info = CapabilityProvider::get_doc(&session, "obj").expect("get doc");
+        assert!(doc_info.truncated);
+        assert_eq!(doc_info.original_len, 5000);
+        assert_eq!(doc_info.doc.expect("doc present").chars().count(), 4096);
+    }
+
+    #[test]
+    fn capability_eval_expr_returns_value_and_output_streams() {
+        let session = PythonSession::initialize().expect("python session");
+        let eval = CapabilityProvider::eval_expr(
+            &session,
+            "(print('out'), __import__('sys').stderr.write('err'), 7)[2]",
+        )
+        .expect("capability eval");
+        assert_eq!(eval.value_repr, "7");
+        assert_eq!(eval.stdout, "out\n");
+        assert_eq!(eval.stderr, "err");
+    }
+
+    #[test]
+    fn capability_errors_surface_python_exception_payload() {
+        let session = PythonSession::initialize().expect("python session");
+        let err = CapabilityProvider::get_repr(&session, "missing_name")
+            .expect_err("name error should map to capability error");
+        match err {
+            CapabilityError::PythonException(exc) => {
+                assert_eq!(exc.exc_type, "NameError");
+                assert!(exc.message.contains("missing_name"));
+            }
+            other => panic!("expected PythonException, got {other:?}"),
+        }
     }
 }
