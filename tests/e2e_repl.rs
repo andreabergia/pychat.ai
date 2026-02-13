@@ -48,6 +48,45 @@ fn tab_toggle_preserves_current_input_line() {
     p.expect(expectrl::Eof).expect("process exits");
 }
 
+#[test]
+fn python_mode_expression_echoes_result() {
+    let mut p = spawn(binary_path()).expect("spawn binary");
+    p.expect(Regex("py> ")).expect("startup prompt");
+    p.send_line("1 + 2").expect("expression input");
+    p.expect(Regex("3\\r?\\n")).expect("evaluated result");
+    p.expect(Regex("py> ")).expect("python prompt persists");
+    p.send_line("exit").expect("exit line");
+    p.expect(expectrl::Eof).expect("process exits");
+}
+
+#[test]
+fn python_mode_error_prints_full_traceback() {
+    let mut p = spawn(binary_path()).expect("spawn binary");
+    p.expect(Regex("py> ")).expect("startup prompt");
+    p.send_line("1 / 0").expect("failing expression");
+    p.expect(Regex("Traceback \\(most recent call last\\):"))
+        .expect("traceback header");
+    p.expect(Regex("ZeroDivisionError: division by zero"))
+        .expect("exception type and message");
+    p.expect(Regex("py> ")).expect("python prompt persists");
+    p.send_line("quit").expect("quit line");
+    p.expect(expectrl::Eof).expect("process exits");
+}
+
+#[test]
+fn python_mode_state_continues_across_inputs() {
+    let mut p = spawn(binary_path()).expect("spawn binary");
+    p.expect(Regex("py> ")).expect("startup prompt");
+    p.send_line("x = 99").expect("set variable");
+    p.expect(Regex("py> ")).expect("prompt after statement");
+    p.send_line("x").expect("read variable");
+    p.expect(Regex("99\\r?\\n"))
+        .expect("state continuity value");
+    p.expect(Regex("py> ")).expect("prompt after expression");
+    p.send_line("quit").expect("quit line");
+    p.expect(expectrl::Eof).expect("process exits");
+}
+
 fn binary_path() -> String {
     std::env::var("CARGO_BIN_EXE_pyaichat").unwrap_or_else(|_| "target/debug/pyaichat".to_string())
 }
