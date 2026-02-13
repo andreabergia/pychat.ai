@@ -23,10 +23,7 @@ pub fn prompt_for(mode: Mode) -> &'static str {
 
 pub fn run_repl(state: &mut AppState) -> Result<()> {
     let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
-    rl.bind_sequence(
-        KeyEvent::from('\t'),
-        EventHandler::Simple(Cmd::Interrupt),
-    );
+    rl.bind_sequence(KeyEvent::from('\t'), EventHandler::Simple(Cmd::Interrupt));
 
     loop {
         match rl.readline(prompt_for(state.mode)) {
@@ -73,5 +70,22 @@ fn handle_line(state: &mut AppState, line: &str) {
         Mode::Assistant => {
             println!("Assistant placeholder: not implemented yet.");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Mode, prompt_for, toggle_mode};
+
+    #[test]
+    fn test_toggle_mode() {
+        assert_eq!(toggle_mode(Mode::Python), Mode::Assistant);
+        assert_eq!(toggle_mode(Mode::Assistant), Mode::Python);
+    }
+
+    #[test]
+    fn test_prompt_for() {
+        assert_eq!(prompt_for(Mode::Python), "py> ");
+        assert_eq!(prompt_for(Mode::Assistant), "ai> ");
     }
 }
