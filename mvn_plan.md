@@ -4,6 +4,16 @@
 
 PyAIChat is implemented as a Rust host application that embeds a Python interpreter. The Rust application manages the REPL, LLM integration, and capability system, while the embedded Python maintains session state and executes user code.
 
+## Decision Locks (Current)
+
+- `TAB` always toggles mode in Phase 1 (completion deferred)
+- Prompt format for Phase 1: `py>` / `ai>`
+- Assistant mode in Phase 1 returns a fixed placeholder response
+- Python strategy: system Python now, vendored distribution deferred
+- Phase 1 remains synchronous; async runtime wiring is deferred to LLM phase
+- Phase 1 requires automated PTY E2E coverage (using `expectrl`)
+- Rust edition baseline: 2024
+
 ## Architecture Layers
 
 ```
@@ -50,18 +60,21 @@ PyAIChat is implemented as a Rust host application that embeds a Python interpre
 - `pyo3` - Python interpreter embedding
 - `crossterm` or `rustyline` - CLI and terminal handling
 - `anyhow` - Error handling
-- `tokio` - Async runtime (for LLM calls)
+- `tokio` - Async runtime (for LLM calls, deferred from Phase 1)
 
 **Deliverables**:
 - Running Rust binary that starts a REPL
 - Mode switching functional
 - Python interpreter initialized and persistent
+- Automated PTY E2E tests covering startup prompt, TAB toggling, and assistant placeholder behavior
 
 ---
 
 ### Phase 2: Python Runtime Interface
 
 **Goal**: Establish the bridge between Rust and the embedded Python interpreter.
+
+_Deferred from Phase 1_: public exec/eval runtime API and exception capture/query surface.
 
 - Create Python module structure for runtime access
 - Implement persistent Python session management
@@ -250,3 +263,9 @@ pyaichat/
 - Advanced REPL features (syntax highlighting, rich output)
 - Multiple LLM provider support
 - Plugin system for custom capabilities
+
+## Explicit Deferrals From Phase 1
+
+- Capability APIs (`list_globals`, `get_type`, `get_repr`, `get_dir`, `get_doc`, `eval_expr`, `get_last_exception`)
+- LLM provider implementation and agent loop wiring
+- Vendored Python packaging/distribution workflow
