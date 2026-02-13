@@ -34,6 +34,20 @@ fn assistant_mode_returns_placeholder() {
     p.expect(expectrl::Eof).expect("process exits");
 }
 
+#[test]
+fn tab_toggle_preserves_current_input_line() {
+    let mut p = spawn(binary_path()).expect("spawn binary");
+    p.expect(Regex("py> ")).expect("startup prompt");
+    p.send("what is this").expect("type partial input");
+    p.send("\t").expect("tab to assistant");
+    p.expect(Regex("ai> ")).expect("assistant prompt");
+    p.send("\n").expect("submit preserved input");
+    p.expect(Regex("Assistant placeholder: not implemented yet\\."))
+        .expect("placeholder response");
+    p.send_line("quit").expect("quit line");
+    p.expect(expectrl::Eof).expect("process exits");
+}
+
 fn binary_path() -> String {
     std::env::var("CARGO_BIN_EXE_pyaichat").unwrap_or_else(|_| "target/debug/pyaichat".to_string())
 }

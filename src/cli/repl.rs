@@ -1,7 +1,10 @@
 use crate::python::PythonSession;
 use anyhow::Result;
 use rustyline::error::ReadlineError;
-use rustyline::{Cmd, Editor, EventHandler, KeyEvent};
+use rustyline::{
+    Cmd, ConditionalEventHandler, Editor, Event, EventContext, EventHandler, KeyEvent, RepeatCount,
+};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -14,6 +17,35 @@ pub struct AppState {
     pub python: PythonSession,
 }
 
+#[derive(Default)]
+struct TabCaptureState {
+    initial: Option<(String, String)>,
+}
+
+struct TabModeToggleHandler {
+    state: Arc<Mutex<TabCaptureState>>,
+}
+
+impl ConditionalEventHandler for TabModeToggleHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        ctx: &EventContext,
+    ) -> Option<Cmd> {
+        let line = ctx.line();
+        let pos = ctx.pos();
+        let (left, right) = line.split_at(pos);
+
+        if let Ok(mut state) = self.state.lock() {
+            state.initial = Some((left.to_string(), right.to_string()));
+        }
+
+        Some(Cmd::Interrupt)
+    }
+}
+
 pub fn prompt_for(mode: Mode) -> &'static str {
     match mode {
         Mode::Python => "py> ",
@@ -23,10 +55,29 @@ pub fn prompt_for(mode: Mode) -> &'static str {
 
 pub fn run_repl(state: &mut AppState) -> Result<()> {
     let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
-    rl.bind_sequence(KeyEvent::from('\t'), EventHandler::Simple(Cmd::Interrupt));
+    let tab_capture_state = Arc::new(Mutex::new(TabCaptureState::default()));
+    rl.bind_sequence(
+        KeyEvent::from('\t'),
+        EventHandler::Conditional(Box::new(TabModeToggleHandler {
+            state: Arc::clone(&tab_capture_state),
+        })),
+    );
 
     loop {
-        match rl.readline(prompt_for(state.mode)) {
+        let initial = {
+            let mut capture = tab_capture_state
+                .lock()
+                .expect("tab capture mutex poisoned");
+            capture.initial.take()
+        };
+
+        let line_result = if let Some((left, right)) = initial {
+            rl.readline_with_initial(prompt_for(state.mode), (&left, &right))
+        } else {
+            rl.readline(prompt_for(state.mode))
+        };
+
+        match line_result {
             Ok(line) => {
                 let line = line.trim();
                 if line.eq_ignore_ascii_case("exit") || line.eq_ignore_ascii_case("quit") {
@@ -42,7 +93,16 @@ pub fn run_repl(state: &mut AppState) -> Result<()> {
                 handle_line(state, line);
             }
             Err(ReadlineError::Interrupted) => {
-                state.mode = toggle_mode(state.mode);
+                let should_toggle = {
+                    let capture = tab_capture_state
+                        .lock()
+                        .expect("tab capture mutex poisoned");
+                    capture.initial.is_some()
+                };
+
+                if should_toggle {
+                    state.mode = toggle_mode(state.mode);
+                }
                 continue;
             }
             Err(ReadlineError::Eof) => break,
