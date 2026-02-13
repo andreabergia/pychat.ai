@@ -1,4 +1,4 @@
-use crate::python::PythonSession;
+use crate::python::{PythonSession, UserRunResult};
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::{
@@ -133,11 +133,41 @@ fn toggle_mode(mode: Mode) -> Mode {
 
 fn handle_line(state: &mut AppState, line: &str) {
     match state.mode {
-        Mode::Python => {
-            if let Err(err) = state.python.run_line(line) {
+        Mode::Python => match state.python.run_user_input(line) {
+            Ok(UserRunResult::Evaluated(result)) => {
+                if !result.stdout.is_empty() {
+                    print!("{}", result.stdout);
+                }
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+                println!("{}", result.value_repr);
+            }
+            Ok(UserRunResult::Executed(result)) => {
+                if !result.stdout.is_empty() {
+                    print!("{}", result.stdout);
+                }
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+            }
+            Ok(UserRunResult::Failed {
+                stdout,
+                stderr,
+                exception,
+            }) => {
+                if !stdout.is_empty() {
+                    print!("{stdout}");
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+                eprint!("{}", exception.traceback);
+            }
+            Err(err) => {
                 println!("error: {err}");
             }
-        }
+        },
         Mode::Assistant => {
             println!("Assistant placeholder: not implemented yet.");
         }
