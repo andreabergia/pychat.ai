@@ -666,4 +666,39 @@ mod tests {
             other => panic!("expected PythonException, got {other:?}"),
         }
     }
+
+    #[test]
+    fn capability_list_globals_matches_filtered_runtime_names() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("alpha = 1\n_beta = 2")
+            .expect("seed globals");
+
+        let globals = CapabilityProvider::list_globals(&session).expect("capability globals");
+        assert!(globals.iter().any(|entry| entry.name == "alpha"));
+        assert!(globals.iter().any(|entry| entry.name == "_beta"));
+        assert!(
+            !globals
+                .iter()
+                .any(|entry| entry.name.starts_with("_pyaichat_"))
+        );
+    }
+
+    #[test]
+    fn capability_get_last_exception_returns_same_payload_as_runtime_api() {
+        let session = PythonSession::initialize().expect("python session");
+        session.run_user_input("1 / 0").expect("run failure");
+
+        let direct = session
+            .get_last_exception()
+            .expect("runtime exception")
+            .expect("runtime exception exists");
+        let via_capability = CapabilityProvider::get_last_exception(&session)
+            .expect("capability exception")
+            .expect("capability exception exists");
+
+        assert_eq!(via_capability.exc_type, direct.exc_type);
+        assert_eq!(via_capability.message, direct.message);
+        assert_eq!(via_capability.traceback, direct.traceback);
+    }
 }
