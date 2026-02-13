@@ -95,7 +95,7 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 
 ### Phase 3: Capability System
 
-**Goal**: Implement the read-only capability interface between Rust and Python.
+**Goal**: Implement the capability inspection interface between Rust and Python for trusted local MVP usage.
 
 **Core Capabilities**:
 
@@ -104,22 +104,22 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 3. `get_repr(expr)` → Get string representation
 4. `get_dir(expr)` → List attributes/members
 5. `get_doc(expr)` → Fetch documentation string
-6. `eval_expr(expr)` → Evaluate expression (read-only, restricted)
+6. `eval_expr(expr)` → Evaluate expression (MVP: unrestricted)
 7. `get_last_exception()` → Return last exception details
 
 **Implementation**:
 - Define capability trait/interface in Rust
 - Implement each capability as PyO3 binding to Python
-- Add safety checks:
-  - Expression validation before eval
-  - Read-only enforcement
-  - Timeout limits
 - Add Python-side helper functions for introspection
+- Keep MVP guardrails lightweight:
+  - Output truncation caps for large capability responses
+  - Internal helper filtering for `list_globals`
+  - No AST validation/sandbox/timeouts in this phase (deferred)
 
 **Deliverables**:
 - All 7 capabilities implemented
-- Safety mechanisms in place
 - Well-defined Rust interface
+- MVP security posture documented (trusted local use; hardening deferred)
 
 ---
 
@@ -219,11 +219,9 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 **Reasoning**: Well-maintained, type-safe bindings, good documentation, supports persistent session.
 
 ### Safety Strategy
-**Decision**: Multi-layer approach:
-1. Rust-side validation (AST inspection, allowlist)
-2. Python-side sandboxing (restricted globals)
-3. Execution timeouts
-4. Read-only enforcement at capability level
+**Decision**: Phased approach.
+1. MVP (Phase 3): trusted local use with minimal guardrails (output truncation + internal helper filtering).
+2. Hardening (Phase 6): AST validation/allowlist, Python-side sandboxing, execution timeouts, and stricter read-only enforcement.
 
 ---
 
