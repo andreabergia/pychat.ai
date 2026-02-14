@@ -185,7 +185,7 @@ async fn handle_line(state: &mut AppState, line: &str) {
             match provider
                 .generate(AssistantInput {
                     user_message: line.to_string(),
-                    system_instruction: Some(ASSISTANT_SYSTEM_PROMPT.to_string()),
+                    system_instruction: Some(ASSISTANT_SYSTEM_PROMPT.trim().to_string()),
                 })
                 .await
             {
