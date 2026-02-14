@@ -128,24 +128,29 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 **Goal**: Integrate LLM backend for conversational assistant functionality.
 
 - Define abstract LLM provider trait
-- Implement provider for chosen backend (e.g., OpenAI, Anthropic)
+- Implement Gemini provider for Gemini Developer API
 - Design prompt templates:
-  - System prompt defining capabilities
-  - Capability invocation prompts
+  - System prompt for direct-answer assistant behavior
   - Response formatting instructions
-- Build LLM client with retry logic
-- Add API key management
-- Implement streaming response handling (optional)
+- Build LLM client using raw `reqwest` REST calls (no provider SDK)
+- Add API key management via environment variables
+  - `GEMINI_API_KEY` (required)
+  - `GEMINI_MODEL` (optional with default)
+- Load `.env` at startup without overriding existing shell environment variables
+- Keep assistant behavior direct-answer only in this phase (no capability/tool loop yet)
+- Return API/network errors to the REPL with actionable messages (no retries in this phase)
+- Streaming response handling deferred
 
 **Dependencies**:
 - `reqwest` - HTTP client
 - `serde`, `serde_json` - Serialization
-- Provider SDK (e.g., `async-openai`)
+- `dotenvy` - `.env` loading for local configuration
 
 **Deliverables**:
-- Working LLM integration
+- Working Gemini integration
 - Prompt templates defined
 - Response parsing functional
+- Assistant mode reads API settings from env / `.env`
 
 ---
 
@@ -204,9 +209,9 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 ## Key Technical Decisions
 
 ### LLM Provider
-**Decision**: OpenAI GPT-4o (first implementation)
+**Decision**: Gemini Developer API (first implementation)
 
-**Reasoning**: Strong reasoning capabilities, widely used, good tool-calling support. Easy to swap later via abstract interface.
+**Reasoning**: Simple API-key-based setup for local development, clean fit with `.env` configuration, and still swappable later through an abstract provider trait.
 
 ### REPL Library
 **Decision**: `rustyline`
@@ -240,7 +245,7 @@ pyaichat/
 │   ├── llm/                 # LLM integration
 │   │   ├── mod.rs
 │   │   ├── provider.rs      # Abstract provider trait
-│   │   └── openai.rs        # OpenAI implementation
+│   │   └── gemini.rs        # Gemini implementation
 │   ├── agent/               # Agent loop and orchestration
 │   │   ├── mod.rs
 │   │   └── loop.rs          # Reasoning loop
