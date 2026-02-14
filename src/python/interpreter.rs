@@ -459,7 +459,11 @@ impl CapabilityProvider for PythonSession {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::CString;
+
     use crate::python::{CapabilityError, CapabilityProvider};
+    use pyo3::prelude::Python;
+    use pyo3::types::PyModuleMethods;
 
     use super::{PythonSession, UserRunResult};
 
@@ -589,6 +593,19 @@ mod tests {
     }
 
     #[test]
+    fn capability_get_type_supports_user_defined_types() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("class CustomThing:\n    pass\nobj = CustomThing()")
+            .expect("seed custom type");
+
+        let type_info = CapabilityProvider::get_type(&session, "obj").expect("get type");
+        assert_eq!(type_info.name, "CustomThing");
+        assert_eq!(type_info.module, "__main__");
+        assert_eq!(type_info.qualified, "__main__.CustomThing");
+    }
+
+    #[test]
     fn capability_get_repr_truncates_large_output() {
         let session = PythonSession::initialize().expect("python session");
         let repr_info = CapabilityProvider::get_repr(&session, "'x' * 5000").expect("get repr");
@@ -638,6 +655,19 @@ mod tests {
         assert!(doc_info.truncated);
         assert_eq!(doc_info.original_len, 5000);
         assert_eq!(doc_info.doc.expect("doc present").chars().count(), 4096);
+    }
+
+    #[test]
+    fn capability_get_doc_returns_some_without_truncation() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("class HasDoc:\n    \"\"\"small docs\"\"\"")
+            .expect("seed doc object");
+
+        let doc_info = CapabilityProvider::get_doc(&session, "HasDoc").expect("get doc");
+        assert!(!doc_info.truncated);
+        assert_eq!(doc_info.original_len, 10);
+        assert_eq!(doc_info.doc.as_deref(), Some("small docs"));
     }
 
     #[test]
@@ -700,5 +730,30 @@ mod tests {
         assert_eq!(via_capability.exc_type, direct.exc_type);
         assert_eq!(via_capability.message, direct.message);
         assert_eq!(via_capability.traceback, direct.traceback);
+    }
+
+    #[test]
+    fn capability_invalid_result_shape_surfaces_for_missing_ok() {
+        let session = PythonSession::initialize().expect("python session");
+
+        Python::attach(|py| {
+            let code =
+                CString::new("def _pyaichat_get_repr(expr):\n    return {'repr': 'no ok key'}\n")
+                    .expect("python code cstring");
+            let main = session.main_module.bind(py);
+            let globals = main.dict();
+            py.run(code.as_c_str(), Some(&globals), Some(&globals))
+                .expect("override helper in session globals");
+        });
+
+        let err = CapabilityProvider::get_repr(&session, "1 + 1")
+            .expect_err("malformed helper payload should fail");
+
+        match err {
+            CapabilityError::InvalidResultShape(msg) => {
+                assert!(msg.contains("missing ok"));
+            }
+            other => panic!("expected InvalidResultShape, got {other:?}"),
+        }
     }
 }
