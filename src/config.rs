@@ -1,6 +1,6 @@
 use std::env;
 
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3-flash-preview";
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
