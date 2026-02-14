@@ -1,4 +1,6 @@
 mod cli;
+mod config;
+mod llm;
 mod python;
 
 use anyhow::Result;
