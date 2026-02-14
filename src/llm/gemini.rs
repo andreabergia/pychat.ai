@@ -45,8 +45,10 @@ impl GeminiProvider {
                     text: input.user_message.clone(),
                 }],
             }],
-            system_instruction: input.system_instruction.as_ref().map(|text| GeminiSystemInstruction {
-                parts: vec![GeminiPart { text: text.clone() }],
+            system_instruction: input.system_instruction.as_ref().map(|text| {
+                GeminiSystemInstruction {
+                    parts: vec![GeminiPart { text: text.clone() }],
+                }
             }),
         }
     }

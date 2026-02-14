@@ -15,7 +15,9 @@ impl AppConfig {
         dotenvy::dotenv().ok();
 
         Self {
-            gemini_api_key: env::var("GEMINI_API_KEY").ok().filter(|v| !v.trim().is_empty()),
+            gemini_api_key: env::var("GEMINI_API_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             gemini_model: env::var("GEMINI_MODEL")
                 .ok()
                 .filter(|v| !v.trim().is_empty())

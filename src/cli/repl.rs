@@ -1,11 +1,9 @@
-use crate::python::{PythonSession, UserRunResult};
-use crate::{
-    llm::{
-        ASSISTANT_SYSTEM_PROMPT,
-        gemini::GeminiProvider,
-        provider::{AssistantInput, LlmProvider},
-    },
+use crate::llm::{
+    ASSISTANT_SYSTEM_PROMPT,
+    gemini::GeminiProvider,
+    provider::{AssistantInput, LlmProvider},
 };
+use crate::python::{PythonSession, UserRunResult};
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::{
