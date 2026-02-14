@@ -22,6 +22,9 @@ fn tab_toggles_mode_both_directions() {
 
 #[test]
 fn assistant_mode_returns_placeholder() {
+    unsafe {
+        std::env::set_var("GEMINI_API_KEY", "");
+    }
     let mut p = spawn(binary_path()).expect("spawn binary");
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send("\t").expect("tab to assistant");
@@ -38,6 +41,9 @@ fn assistant_mode_returns_placeholder() {
 
 #[test]
 fn tab_toggle_preserves_current_input_line() {
+    unsafe {
+        std::env::set_var("GEMINI_API_KEY", "");
+    }
     let mut p = spawn(binary_path()).expect("spawn binary");
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send("what is this").expect("type partial input");

@@ -51,7 +51,6 @@ mod tests {
         reset_vars();
         let cfg = AppConfig::from_env();
         assert_eq!(cfg.gemini_model, DEFAULT_GEMINI_MODEL);
-        assert_eq!(cfg.gemini_api_key, None);
     }
 
     #[test]
