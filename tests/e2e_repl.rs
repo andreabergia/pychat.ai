@@ -1,8 +1,9 @@
-use expectrl::{Regex, spawn};
+use expectrl::{Regex, Session};
+use std::process::Command;
 
 #[test]
 fn repl_starts_with_python_prompt() {
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send_line("exit").expect("exit line");
     p.expect(expectrl::Eof).expect("process exits");
@@ -10,7 +11,7 @@ fn repl_starts_with_python_prompt() {
 
 #[test]
 fn tab_toggles_mode_both_directions() {
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send("\t").expect("tab to assistant");
     p.expect(Regex("ai> ")).expect("assistant prompt");
@@ -22,10 +23,7 @@ fn tab_toggles_mode_both_directions() {
 
 #[test]
 fn assistant_mode_returns_placeholder() {
-    unsafe {
-        std::env::set_var("GEMINI_API_KEY", "");
-    }
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send("\t").expect("tab to assistant");
     p.expect(Regex("ai> ")).expect("assistant prompt");
@@ -41,10 +39,7 @@ fn assistant_mode_returns_placeholder() {
 
 #[test]
 fn tab_toggle_preserves_current_input_line() {
-    unsafe {
-        std::env::set_var("GEMINI_API_KEY", "");
-    }
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send("what is this").expect("type partial input");
     p.send("\t").expect("tab to assistant");
@@ -60,7 +55,7 @@ fn tab_toggle_preserves_current_input_line() {
 
 #[test]
 fn python_mode_expression_echoes_result() {
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send_line("1 + 2").expect("expression input");
     p.expect(Regex("3\\r?\\n")).expect("evaluated result");
@@ -71,7 +66,7 @@ fn python_mode_expression_echoes_result() {
 
 #[test]
 fn python_mode_error_prints_full_traceback() {
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send_line("1 / 0").expect("failing expression");
     p.expect(Regex("Traceback \\(most recent call last\\):"))
@@ -85,7 +80,7 @@ fn python_mode_error_prints_full_traceback() {
 
 #[test]
 fn python_mode_state_continues_across_inputs() {
-    let mut p = spawn(binary_path()).expect("spawn binary");
+    let mut p = spawn_repl();
     p.expect(Regex("py> ")).expect("startup prompt");
     p.send_line("x = 99").expect("set variable");
     p.expect(Regex("py> ")).expect("prompt after statement");
@@ -99,4 +94,11 @@ fn python_mode_state_continues_across_inputs() {
 
 fn binary_path() -> String {
     std::env::var("CARGO_BIN_EXE_pyaichat").unwrap_or_else(|_| "target/debug/pyaichat".to_string())
+}
+
+fn spawn_repl() -> Session {
+    let mut cmd = Command::new(binary_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("GEMINI_API_KEY", "");
+    Session::spawn(cmd).expect("spawn binary")
 }
