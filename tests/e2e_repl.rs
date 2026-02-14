@@ -27,8 +27,10 @@ fn assistant_mode_returns_placeholder() {
     p.send("\t").expect("tab to assistant");
     p.expect(Regex("ai> ")).expect("assistant prompt");
     p.send_line("what can you do?").expect("assistant query");
-    p.expect(Regex("Assistant placeholder: not implemented yet\\."))
-        .expect("placeholder response");
+    p.expect(Regex(
+        "Assistant unavailable: missing GEMINI_API_KEY\\. Configure it in your shell or \\.env file",
+    ))
+    .expect("missing key guidance");
     p.expect(Regex("ai> ")).expect("assistant prompt persists");
     p.send_line("quit").expect("quit line");
     p.expect(expectrl::Eof).expect("process exits");
@@ -42,8 +44,10 @@ fn tab_toggle_preserves_current_input_line() {
     p.send("\t").expect("tab to assistant");
     p.expect(Regex("ai> ")).expect("assistant prompt");
     p.send("\n").expect("submit preserved input");
-    p.expect(Regex("Assistant placeholder: not implemented yet\\."))
-        .expect("placeholder response");
+    p.expect(Regex(
+        "Assistant unavailable: missing GEMINI_API_KEY\\. Configure it in your shell or \\.env file",
+    ))
+    .expect("missing key guidance");
     p.send_line("quit").expect("quit line");
     p.expect(expectrl::Eof).expect("process exits");
 }

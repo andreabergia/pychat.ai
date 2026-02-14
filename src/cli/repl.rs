@@ -1,4 +1,11 @@
 use crate::python::{PythonSession, UserRunResult};
+use crate::{
+    llm::{
+        ASSISTANT_SYSTEM_PROMPT,
+        gemini::GeminiProvider,
+        provider::{AssistantInput, LlmProvider},
+    },
+};
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::{
@@ -16,6 +23,7 @@ pub enum Mode {
 pub struct AppState {
     pub mode: Mode,
     pub python: PythonSession,
+    pub llm: Option<GeminiProvider>,
 }
 
 #[derive(Default)]
@@ -54,7 +62,7 @@ pub fn prompt_for(mode: Mode) -> &'static str {
     }
 }
 
-pub fn run_repl(state: &mut AppState) -> Result<()> {
+pub async fn run_repl(state: &mut AppState) -> Result<()> {
     let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
     let tab_capture_state = Arc::new(Mutex::new(TabCaptureState::default()));
     rl.bind_sequence(
@@ -91,7 +99,7 @@ pub fn run_repl(state: &mut AppState) -> Result<()> {
 
                 let _ = rl.add_history_entry(line);
 
-                handle_line(state, line);
+                handle_line(state, line).await;
             }
             Err(ReadlineError::Interrupted) => {
                 let should_toggle = {
@@ -131,7 +139,7 @@ fn toggle_mode(mode: Mode) -> Mode {
     }
 }
 
-fn handle_line(state: &mut AppState, line: &str) {
+async fn handle_line(state: &mut AppState, line: &str) {
     match state.mode {
         Mode::Python => match state.python.run_user_input(line) {
             Ok(UserRunResult::Evaluated(result)) => {
@@ -169,7 +177,23 @@ fn handle_line(state: &mut AppState, line: &str) {
             }
         },
         Mode::Assistant => {
-            println!("Assistant placeholder: not implemented yet.");
+            let Some(provider) = &state.llm else {
+                println!(
+                    "Assistant unavailable: missing GEMINI_API_KEY. Configure it in your shell or .env file (example: GEMINI_API_KEY=your_key)."
+                );
+                return;
+            };
+
+            match provider
+                .generate(AssistantInput {
+                    user_message: line.to_string(),
+                    system_instruction: Some(ASSISTANT_SYSTEM_PROMPT.to_string()),
+                })
+                .await
+            {
+                Ok(output) => println!("{}", output.text),
+                Err(err) => println!("Assistant request failed: {err}"),
+            }
         }
     }
 }
