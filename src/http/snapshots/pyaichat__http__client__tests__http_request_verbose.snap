@@ -1,0 +1,9 @@
+---
+source: src/http/client.rs
+expression: "lines.join(\"\\n\")"
+---
+[http-debug] > POST https://example.com/v1/test?key=***REDACTED***&view=full
+[http-debug] > authorization: ***REDACTED***
+[http-debug] > content-type: application/json
+[http-debug] >
+[http-debug] > {"message":"hello","token":"***REDACTED***"}

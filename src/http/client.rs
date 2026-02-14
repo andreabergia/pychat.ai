@@ -66,20 +66,9 @@ impl HttpClient {
             return;
         }
 
-        let url = redact_url(request.url(), self.debug.redact_secrets);
-        let body = redact_text_body(body_json, self.debug.redact_secrets);
-        let body = truncate_for_log(&body, self.debug.max_body_chars);
-
-        self.log_line(format!("[http-debug] > {} {}", request.method(), url));
-        for (name, value) in request.headers() {
-            self.log_line(format!(
-                "[http-debug] > {}: {}",
-                name.as_str(),
-                redact_header_value(name.as_str(), value, self.debug.redact_secrets)
-            ));
+        for line in request_log_lines(self.debug, request, body_json) {
+            self.log_line(line);
         }
-        self.log_line("[http-debug] >".to_string());
-        self.log_body('>', &body);
     }
 
     fn log_response(&self, status: u16, headers: &reqwest::header::HeaderMap, body: &str) {
@@ -87,29 +76,8 @@ impl HttpClient {
             return;
         }
 
-        let body = redact_text_body(body, self.debug.redact_secrets);
-        let body = truncate_for_log(&body, self.debug.max_body_chars);
-
-        self.log_line(format!("[http-debug] < HTTP {status}"));
-        for (name, value) in headers {
-            self.log_line(format!(
-                "[http-debug] < {}: {}",
-                name.as_str(),
-                redact_header_value(name.as_str(), value, self.debug.redact_secrets)
-            ));
-        }
-        self.log_line("[http-debug] <".to_string());
-        self.log_body('<', &body);
-    }
-
-    fn log_body(&self, direction: char, body: &str) {
-        if body.is_empty() {
-            self.log_line(format!("[http-debug] {direction} <empty body>"));
-            return;
-        }
-
-        for line in body.lines() {
-            self.log_line(format!("[http-debug] {direction} {line}"));
+        for line in response_log_lines(self.debug, status, headers, body) {
+            self.log_line(line);
         }
     }
 
@@ -143,6 +111,63 @@ impl HttpClient {
     }
 }
 
+fn request_log_lines(
+    debug: HttpDebugConfig,
+    request: &reqwest::Request,
+    body_json: &str,
+) -> Vec<String> {
+    let url = redact_url(request.url(), debug.redact_secrets);
+    let body = redact_text_body(body_json, debug.redact_secrets);
+    let body = truncate_for_log(&body, debug.max_body_chars);
+
+    let mut lines = Vec::new();
+    lines.push(format!("[http-debug] > {} {}", request.method(), url));
+    for (name, value) in request.headers() {
+        lines.push(format!(
+            "[http-debug] > {}: {}",
+            name.as_str(),
+            redact_header_value(name.as_str(), value, debug.redact_secrets)
+        ));
+    }
+    lines.push("[http-debug] >".to_string());
+    append_body_lines(&mut lines, '>', &body);
+    lines
+}
+
+fn response_log_lines(
+    debug: HttpDebugConfig,
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Vec<String> {
+    let body = redact_text_body(body, debug.redact_secrets);
+    let body = truncate_for_log(&body, debug.max_body_chars);
+
+    let mut lines = Vec::new();
+    lines.push(format!("[http-debug] < HTTP {status}"));
+    for (name, value) in headers {
+        lines.push(format!(
+            "[http-debug] < {}: {}",
+            name.as_str(),
+            redact_header_value(name.as_str(), value, debug.redact_secrets)
+        ));
+    }
+    lines.push("[http-debug] <".to_string());
+    append_body_lines(&mut lines, '<', &body);
+    lines
+}
+
+fn append_body_lines(lines: &mut Vec<String>, direction: char, body: &str) {
+    if body.is_empty() {
+        lines.push(format!("[http-debug] {direction} <empty body>"));
+        return;
+    }
+
+    for line in body.lines() {
+        lines.push(format!("[http-debug] {direction} {line}"));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpResponseData {
     pub status: u16,
@@ -151,9 +176,11 @@ pub struct HttpResponseData {
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpClient, HttpResponseData};
+    use super::{HttpClient, HttpResponseData, request_log_lines, response_log_lines};
     use crate::http::debug::HttpDebugConfig;
     use reqwest::Client;
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+    use reqwest::{Method, Url};
     use serde_json::json;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -229,5 +256,65 @@ mod tests {
             .expect("request should succeed");
 
         assert!(logs.lock().expect("logs lock").is_empty());
+    }
+
+    #[test]
+    fn request_log_lines_match_snapshot() {
+        let debug = HttpDebugConfig {
+            enabled: true,
+            redact_secrets: true,
+            max_body_chars: 4_000,
+        };
+        let mut request = reqwest::Request::new(
+            Method::POST,
+            Url::parse("https://example.com/v1/test?key=secret&view=full").expect("valid url"),
+        );
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret-token"),
+        );
+        request
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let lines = request_log_lines(debug, &request, r#"{"token":"abc","message":"hello"}"#);
+        insta::assert_snapshot!("http_request_verbose", lines.join("\n"));
+    }
+
+    #[test]
+    fn response_log_lines_match_snapshot() {
+        let debug = HttpDebugConfig {
+            enabled: true,
+            redact_secrets: true,
+            max_body_chars: 4_000,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert("x-api-key", HeaderValue::from_static("response-secret"));
+
+        let lines = response_log_lines(
+            debug,
+            401,
+            &headers,
+            "{\"error\":\"invalid\",\"api_key\":\"response-secret\"}\n{\"hint\":\"retry\"}",
+        );
+        insta::assert_snapshot!("http_response_verbose", lines.join("\n"));
+    }
+
+    #[test]
+    fn response_log_lines_truncated_body_snapshot() {
+        let debug = HttpDebugConfig {
+            enabled: true,
+            redact_secrets: true,
+            max_body_chars: 24,
+        };
+        let headers = HeaderMap::new();
+        let lines = response_log_lines(
+            debug,
+            200,
+            &headers,
+            "{\"message\":\"abcdefghijklmnopqrstuvwxyz\"}",
+        );
+        insta::assert_snapshot!("http_response_verbose_truncated", lines.join("\n"));
     }
 }

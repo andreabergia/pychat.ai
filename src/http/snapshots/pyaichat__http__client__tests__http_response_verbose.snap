@@ -1,0 +1,10 @@
+---
+source: src/http/client.rs
+expression: "lines.join(\"\\n\")"
+---
+[http-debug] < HTTP 401
+[http-debug] < content-type: application/json
+[http-debug] < x-api-key: ***REDACTED***
+[http-debug] <
+[http-debug] < {"error":"invalid","api_key":"response-secret"}
+[http-debug] < {"hint":"retry"}
