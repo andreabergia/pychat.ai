@@ -1,11 +1,11 @@
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::provider::{AssistantInput, AssistantOutput, LlmError, LlmProvider, LlmResult};
+use crate::http::client::HttpClient;
 
 #[derive(Debug, Clone)]
 pub struct GeminiProvider {
-    client: Client,
+    client: HttpClient,
     api_key: String,
     model: String,
     base_url: String,
@@ -13,7 +13,7 @@ pub struct GeminiProvider {
 
 impl GeminiProvider {
     pub fn new(
-        client: Client,
+        client: HttpClient,
         api_key: Option<String>,
         model: String,
         base_url: String,
@@ -72,26 +72,22 @@ impl LlmProvider for GeminiProvider {
         let payload = Self::build_request(&input);
         let resp = self
             .client
-            .post(self.endpoint())
-            .query(&[("key", self.api_key.as_str())])
-            .json(&payload)
-            .send()
+            .post_json(
+                self.endpoint().as_str(),
+                &[("key", self.api_key.as_str())],
+                &payload,
+            )
             .await
             .map_err(|err| LlmError::Transport(err.to_string()))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read body>".to_string());
+        if !(200..300).contains(&resp.status) {
+            let status = resp.status;
+            let body = resp.body;
             let body = body.chars().take(400).collect::<String>();
             return Err(LlmError::HttpStatus { status, body });
         }
 
-        let parsed = resp
-            .json::<GeminiGenerateResponse>()
-            .await
+        let parsed = serde_json::from_str::<GeminiGenerateResponse>(&resp.body)
             .map_err(|err| LlmError::Parse(err.to_string()))?;
         let text = Self::extract_text(parsed)?;
         Ok(AssistantOutput { text })
@@ -141,8 +137,8 @@ struct GeminiResponseContent {
 #[cfg(test)]
 mod tests {
     use super::GeminiProvider;
+    use crate::http::{client::HttpClient, debug::HttpDebugConfig};
     use crate::llm::provider::{AssistantInput, LlmError, LlmProvider};
-    use reqwest::Client;
     use wiremock::matchers::{body_string_contains, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -164,7 +160,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            Client::new(),
+            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
             Some("test-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -192,7 +188,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            Client::new(),
+            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
             Some("bad-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -227,7 +223,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            Client::new(),
+            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
             Some("test-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -248,7 +244,7 @@ mod tests {
     #[test]
     fn new_requires_api_key() {
         let err = GeminiProvider::new(
-            Client::new(),
+            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
             None,
             "test-model".to_string(),
             "https://example.com".to_string(),

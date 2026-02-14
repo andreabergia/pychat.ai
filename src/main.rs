@@ -1,20 +1,28 @@
 mod cli;
 mod config;
+mod http;
 mod llm;
 mod python;
 
 use anyhow::Result;
-use cli::{AppState, Mode, run_repl};
+use clap::Parser;
+use cli::{AppState, CliArgs, Mode, run_repl};
 use config::AppConfig;
+use http::{client::HttpClient, debug::HttpDebugConfig};
 use llm::gemini::GeminiProvider;
 use python::PythonSession;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = CliArgs::parse();
     let config = AppConfig::from_env();
     let python = PythonSession::initialize()?;
-    let llm = GeminiProvider::new(
+    let http = HttpClient::new(
         reqwest::Client::new(),
+        HttpDebugConfig::from_verbose(args.verbose),
+    );
+    let llm = GeminiProvider::new(
+        http,
         config.gemini_api_key.clone(),
         config.gemini_model.clone(),
         config.gemini_base_url.clone(),
