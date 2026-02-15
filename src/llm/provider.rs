@@ -1,15 +1,66 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use serde_json::Value;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssistantRole {
+    User,
+    Model,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssistantPart {
+    Text(String),
+    FunctionCall {
+        id: Option<String>,
+        name: String,
+        args_json: Value,
+    },
+    FunctionResponse {
+        id: Option<String>,
+        name: String,
+        response_json: Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantMessage {
+    pub role: AssistantRole,
+    pub parts: Vec<AssistantPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionDeclaration {
+    pub name: String,
+    pub description: String,
+    pub parameters_json_schema: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCallingMode {
+    Auto,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssistantInput {
-    pub user_message: String,
     pub system_instruction: Option<String>,
+    pub messages: Vec<AssistantMessage>,
+    pub tools: Vec<FunctionDeclaration>,
+    pub tool_calling_mode: ToolCallingMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantCandidate {
+    pub message: AssistantMessage,
+    pub finish_reason: Option<String>,
+    pub safety_blocked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssistantOutput {
-    pub text: String,
+    pub candidates: Vec<AssistantCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +69,7 @@ pub enum LlmError {
     HttpStatus { status: u16, body: String },
     Transport(String),
     Parse(String),
-    EmptyResponse,
+    EmptyCandidates,
 }
 
 impl Display for LlmError {
@@ -30,7 +81,7 @@ impl Display for LlmError {
             }
             Self::Transport(msg) => write!(f, "provider transport error: {msg}"),
             Self::Parse(msg) => write!(f, "provider parse error: {msg}"),
-            Self::EmptyResponse => write!(f, "provider returned empty response text"),
+            Self::EmptyCandidates => write!(f, "provider returned no candidates"),
         }
     }
 }

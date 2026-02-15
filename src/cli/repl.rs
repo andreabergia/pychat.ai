@@ -1,7 +1,7 @@
 use crate::llm::{
     ASSISTANT_SYSTEM_PROMPT,
     gemini::GeminiProvider,
-    provider::{AssistantInput, LlmProvider},
+    provider::{AssistantInput, AssistantMessage, AssistantPart, AssistantRole, LlmProvider, ToolCallingMode},
 };
 use crate::python::{PythonSession, UserRunResult};
 use anyhow::Result;
@@ -184,12 +184,34 @@ async fn handle_line(state: &mut AppState, line: &str) {
 
             match provider
                 .generate(AssistantInput {
-                    user_message: line.to_string(),
                     system_instruction: Some(ASSISTANT_SYSTEM_PROMPT.trim().to_string()),
+                    messages: vec![AssistantMessage {
+                        role: AssistantRole::User,
+                        parts: vec![AssistantPart::Text(line.to_string())],
+                    }],
+                    tools: Vec::new(),
+                    tool_calling_mode: ToolCallingMode::Auto,
                 })
                 .await
             {
-                Ok(output) => println!("{}", output.text),
+                Ok(output) => {
+                    let text = output
+                        .candidates
+                        .iter()
+                        .flat_map(|c| c.message.parts.iter())
+                        .filter_map(|part| match part {
+                            AssistantPart::Text(t) if !t.trim().is_empty() => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    if text.is_empty() {
+                        println!("Assistant returned no text response.");
+                    } else {
+                        println!("{text}");
+                    }
+                }
                 Err(err) => println!("Assistant request failed: {err}"),
             }
         }
