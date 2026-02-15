@@ -308,6 +308,10 @@ mod tests {
     use crate::agent::dispatch::{FunctionCallSpec, dispatch_calls, tool_declarations};
     use crate::llm::provider::AssistantPart;
     use crate::python::PythonSession;
+    use crate::python::{
+        CapabilityError, CapabilityProvider, DirInfo, DocInfo, EvalInfo, ExceptionInfo,
+        GlobalEntry, ReprInfo, TypeInfo,
+    };
 
     #[test]
     fn tool_declarations_include_phase5_tools() {
@@ -374,11 +378,38 @@ mod tests {
 
     #[test]
     fn dispatch_get_last_exception_includes_payload() {
-        let session = PythonSession::initialize().expect("python");
-        let _ = session.run_user_input("1 / 0").expect("run input");
+        struct StubProvider;
+        impl CapabilityProvider for StubProvider {
+            fn list_globals(&self) -> Result<Vec<GlobalEntry>, CapabilityError> {
+                Ok(vec![])
+            }
+            fn get_type(&self, _expr: &str) -> Result<TypeInfo, CapabilityError> {
+                unreachable!("not used")
+            }
+            fn get_repr(&self, _expr: &str) -> Result<ReprInfo, CapabilityError> {
+                unreachable!("not used")
+            }
+            fn get_dir(&self, _expr: &str) -> Result<DirInfo, CapabilityError> {
+                unreachable!("not used")
+            }
+            fn get_doc(&self, _expr: &str) -> Result<DocInfo, CapabilityError> {
+                unreachable!("not used")
+            }
+            fn eval_expr(&self, _expr: &str) -> Result<EvalInfo, CapabilityError> {
+                unreachable!("not used")
+            }
+            fn get_last_exception(&self) -> Result<Option<ExceptionInfo>, CapabilityError> {
+                Ok(Some(ExceptionInfo {
+                    exc_type: "ZeroDivisionError".to_string(),
+                    message: "division by zero".to_string(),
+                    traceback: "Traceback ...".to_string(),
+                }))
+            }
+        }
+        let provider = StubProvider;
 
         let responses = dispatch_calls(
-            &session,
+            &provider,
             &[FunctionCallSpec {
                 id: Some("c3".to_string()),
                 name: "get_last_exception".to_string(),

@@ -485,6 +485,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_serializes_function_response_and_thought_signature() {
+        let server = MockServer::start().await;
+        let body = r#"{
+            "candidates": [
+                {"finishReason":"STOP","content":{"parts":[{"text":"ok"}]}}
+            ]
+        }"#;
+
+        Mock::given(method("POST"))
+            .and(path("/v1beta/models/test-model:generateContent"))
+            .and(query_param("key", "test-key"))
+            .and(body_string_contains("\"functionResponse\""))
+            .and(body_string_contains(
+                "\"thoughtSignature\":\"sig-roundtrip\"",
+            ))
+            .and(body_string_contains("\"mode\":\"AUTO\""))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+
+        let provider = GeminiProvider::new(
+            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            Some("test-key".to_string()),
+            "test-model".to_string(),
+            server.uri(),
+        )
+        .expect("provider");
+
+        let input = AssistantInput {
+            system_instruction: Some("system".to_string()),
+            messages: vec![
+                AssistantMessage {
+                    role: AssistantRole::Model,
+                    parts: vec![AssistantPart::FunctionCall {
+                        id: Some("c1".to_string()),
+                        name: "list_globals".to_string(),
+                        args_json: json!({}),
+                        thought_signature: Some("sig-roundtrip".to_string()),
+                    }],
+                },
+                AssistantMessage {
+                    role: AssistantRole::User,
+                    parts: vec![AssistantPart::FunctionResponse {
+                        id: Some("c1".to_string()),
+                        name: "list_globals".to_string(),
+                        response_json: json!({"ok":true,"result":{"globals":[]}}),
+                        thought_signature: None,
+                    }],
+                },
+            ],
+            tools: vec![FunctionDeclaration {
+                name: "list_globals".to_string(),
+                description: "List global names in scope".to_string(),
+                parameters_json_schema: json!({"type":"object","properties":{}}),
+            }],
+            tool_calling_mode: ToolCallingMode::Auto,
+        };
+
+        let out = provider.generate(input).await.expect("success response");
+        assert_eq!(out.candidates.len(), 1);
+    }
+
+    #[tokio::test]
     async fn generate_returns_empty_candidates_error_when_missing() {
         let server = MockServer::start().await;
         let body = r#"{"candidates": []}"#;
@@ -508,6 +571,39 @@ mod tests {
             .expect_err("expected empty candidates error");
 
         assert_eq!(err, LlmError::EmptyCandidates);
+    }
+
+    #[tokio::test]
+    async fn verify_function_calling_support_maps_unsupported_400() {
+        let server = MockServer::start().await;
+        let body =
+            "This model does not support function calling. Use a function-calling capable model.";
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let provider = GeminiProvider::new(
+            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            Some("test-key".to_string()),
+            "test-model".to_string(),
+            server.uri(),
+        )
+        .expect("provider");
+
+        let err = provider
+            .verify_function_calling_support()
+            .await
+            .expect_err("expected unsupported error");
+
+        match err {
+            LlmError::FunctionCallingUnsupported { model, details } => {
+                assert_eq!(model, "test-model");
+                assert!(details.contains("does not support function calling"));
+            }
+            other => panic!("expected FunctionCallingUnsupported, got {other:?}"),
+        }
     }
 
     #[test]

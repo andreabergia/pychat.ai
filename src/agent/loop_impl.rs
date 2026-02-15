@@ -376,6 +376,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_question_handles_multiple_tool_calls_in_one_turn() {
+        let provider = FakeProvider::new(vec![
+            Ok(AssistantOutput {
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![
+                            AssistantPart::FunctionCall {
+                                id: Some("c1".to_string()),
+                                name: "list_globals".to_string(),
+                                args_json: json!({}),
+                                thought_signature: Some("sig1".to_string()),
+                            },
+                            AssistantPart::FunctionCall {
+                                id: Some("c2".to_string()),
+                                name: "get_last_exception".to_string(),
+                                args_json: json!({}),
+                                thought_signature: Some("sig2".to_string()),
+                            },
+                        ],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+            Ok(AssistantOutput {
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::Text {
+                            text: "multi ok".to_string(),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+        ]);
+
+        let session = PythonSession::initialize().expect("python");
+        let answer = run_question(&provider, &session, "run multiple", &AgentConfig::default())
+            .await
+            .expect("answer");
+
+        assert_eq!(answer.text, "multi ok");
+        assert!(!answer.degraded);
+    }
+
+    #[tokio::test]
     async fn run_question_degrades_after_retry_budget_exhausted() {
         let provider = FakeProvider::new(vec![
             Ok(AssistantOutput {
