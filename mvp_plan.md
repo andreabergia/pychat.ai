@@ -158,24 +158,38 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 
 **Goal**: Implement bounded multi-step reasoning with capability orchestration.
 
-- Design agent loop structure (max steps, timeout)
+- Design bounded agent loop structure:
+  - `max_steps = 6`
+  - `per_step_timeout = 8s`
+  - `total_timeout = 20s`
+  - `invalid_response_retries = 1` (shared path for malformed/empty/unusable model responses)
+- Use Gemini-native function-calling protocol (no custom JSON action envelope):
+  - Send capability declarations via `tools.functionDeclarations`
+  - Keep tool-calling mode `AUTO` only
+  - Allow model to answer directly without any tool calls
 - Implement capability dispatch logic:
-  - Parse LLM response for capability calls
-  - Execute capabilities via Python bridge
-  - Feed results back to LLM
+  - Parse `functionCall` parts from selected model candidate
+  - Execute calls through `CapabilityProvider` in deterministic order
+  - Return results as `functionResponse` parts
 - Implement step-by-step reasoning:
   1. User question → LLM analysis
   2. LLM requests capabilities
   3. Execute capabilities in Python
   4. Return results to LLM
   5. LLM generates final answer
-- Add context management across steps
-- Implement response aggregation
+- Add per-question context management across steps only (no cross-question assistant history)
+- Add candidate/termination handling:
+  - Do not assume `candidates[0]` is always usable
+  - Respect finish/safety metadata when selecting candidate
+  - Treat empty text + no tool calls as invalid response (retry once, then soft-fail)
+- Add startup model capability check:
+  - Fail fast with actionable message when selected model lacks function-calling support
 
 **Deliverables**:
 - Multi-step agent loop functional
 - Capability orchestration working
 - End-to-end question answering
+- Soft-fail degradation implemented for timeout/limit/invalid-response cases
 
 ---
 
