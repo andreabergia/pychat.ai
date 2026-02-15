@@ -154,9 +154,22 @@ fn repair_prompt_message() -> AssistantMessage {
 }
 
 fn select_candidate(candidates: &[AssistantCandidate]) -> Option<&AssistantCandidate> {
-    candidates
-        .iter()
-        .find(|candidate| !candidate.safety_blocked && !candidate.message.parts.is_empty())
+    candidates.iter().find(|candidate| {
+        !candidate.safety_blocked
+            && !candidate.message.parts.is_empty()
+            && is_acceptable_finish_reason(candidate.finish_reason.as_deref())
+    })
+}
+
+fn is_acceptable_finish_reason(reason: Option<&str>) -> bool {
+    match reason {
+        None => true,
+        Some("STOP") | Some("MAX_TOKENS") => true,
+        Some("SAFETY") | Some("RECITATION") | Some("BLOCKLIST") | Some("PROHIBITED_CONTENT") => {
+            false
+        }
+        Some(_) => true,
+    }
 }
 
 fn extract_function_calls(parts: &[AssistantPart]) -> Vec<FunctionCallSpec> {
@@ -277,5 +290,122 @@ mod tests {
 
         assert_eq!(answer.text, "done");
         assert!(!answer.degraded);
+    }
+
+    #[tokio::test]
+    async fn run_question_skips_unusable_first_candidate() {
+        let provider = FakeProvider::new(vec![Ok(AssistantOutput {
+            candidates: vec![
+                AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::Text {
+                            text: "blocked".to_string(),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("SAFETY".to_string()),
+                    safety_blocked: true,
+                },
+                AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::Text {
+                            text: "usable".to_string(),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                },
+            ],
+        })]);
+
+        let session = PythonSession::initialize().expect("python");
+        let answer = run_question(
+            &provider,
+            &session,
+            "say something",
+            &AgentConfig::default(),
+        )
+        .await
+        .expect("answer");
+
+        assert_eq!(answer.text, "usable");
+        assert!(!answer.degraded);
+    }
+
+    #[tokio::test]
+    async fn run_question_retries_once_after_invalid_response() {
+        let provider = FakeProvider::new(vec![
+            Ok(AssistantOutput {
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::Text {
+                            text: " ".to_string(),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+            Ok(AssistantOutput {
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::Text {
+                            text: "recovered".to_string(),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+        ]);
+
+        let session = PythonSession::initialize().expect("python");
+        let answer = run_question(&provider, &session, "retry flow", &AgentConfig::default())
+            .await
+            .expect("answer");
+
+        assert_eq!(answer.text, "recovered");
+        assert!(!answer.degraded);
+    }
+
+    #[tokio::test]
+    async fn run_question_degrades_after_retry_budget_exhausted() {
+        let provider = FakeProvider::new(vec![
+            Ok(AssistantOutput {
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+            Ok(AssistantOutput {
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+        ]);
+
+        let session = PythonSession::initialize().expect("python");
+        let answer = run_question(&provider, &session, "retry fail", &AgentConfig::default())
+            .await
+            .expect("answer");
+
+        assert!(answer.degraded);
+        assert!(answer.text.contains("invalid response repeatedly"));
     }
 }
