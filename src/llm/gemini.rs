@@ -54,6 +54,7 @@ impl GeminiProvider {
                         text: Some(text.clone()),
                         function_call: None,
                         function_response: None,
+                        thought_signature: None,
                     }],
                 }
             }),
@@ -91,15 +92,20 @@ impl GeminiProvider {
 
     fn to_part(part: &AssistantPart) -> GeminiPartRequest {
         match part {
-            AssistantPart::Text(text) => GeminiPartRequest {
+            AssistantPart::Text {
+                text,
+                thought_signature,
+            } => GeminiPartRequest {
                 text: Some(text.clone()),
                 function_call: None,
                 function_response: None,
+                thought_signature: thought_signature.clone(),
             },
             AssistantPart::FunctionCall {
                 id,
                 name,
                 args_json,
+                thought_signature,
             } => GeminiPartRequest {
                 text: None,
                 function_call: Some(GeminiFunctionCall {
@@ -108,11 +114,13 @@ impl GeminiProvider {
                     args: args_json.clone(),
                 }),
                 function_response: None,
+                thought_signature: thought_signature.clone(),
             },
             AssistantPart::FunctionResponse {
                 id,
                 name,
                 response_json,
+                thought_signature,
             } => GeminiPartRequest {
                 text: None,
                 function_call: None,
@@ -121,6 +129,7 @@ impl GeminiProvider {
                     name: name.clone(),
                     response: response_json.clone(),
                 }),
+                thought_signature: thought_signature.clone(),
             },
         }
     }
@@ -163,11 +172,14 @@ impl GeminiProvider {
     }
 
     fn to_output_part(part: GeminiPartResponse) -> Option<AssistantPart> {
+        let thought_signature = part.thought_signature;
+
         if let Some(function_call) = part.function_call {
             return Some(AssistantPart::FunctionCall {
                 id: function_call.id,
                 name: function_call.name,
                 args_json: function_call.args,
+                thought_signature,
             });
         }
 
@@ -176,10 +188,14 @@ impl GeminiProvider {
                 id: function_response.id,
                 name: function_response.name,
                 response_json: function_response.response,
+                thought_signature,
             });
         }
 
-        part.text.map(AssistantPart::Text)
+        part.text.map(|text| AssistantPart::Text {
+            text,
+            thought_signature,
+        })
     }
 }
 
@@ -241,6 +257,8 @@ struct GeminiPartRequest {
     function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<GeminiFunctionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -313,6 +331,8 @@ struct GeminiPartResponse {
     function_call: Option<GeminiFunctionCall>,
     #[serde(default)]
     function_response: Option<GeminiFunctionResponse>,
+    #[serde(default)]
+    thought_signature: Option<String>,
 }
 
 #[cfg(test)]
@@ -332,7 +352,10 @@ mod tests {
             system_instruction: Some("system".to_string()),
             messages: vec![AssistantMessage {
                 role: AssistantRole::User,
-                parts: vec![AssistantPart::Text("hello".to_string())],
+                parts: vec![AssistantPart::Text {
+                    text: "hello".to_string(),
+                    thought_signature: None,
+                }],
             }],
             tools: vec![FunctionDeclaration {
                 name: "list_globals".to_string(),
@@ -348,7 +371,7 @@ mod tests {
         let server = MockServer::start().await;
         let body = r#"{
             "candidates": [
-                {"finishReason":"STOP","content":{"parts":[{"functionCall":{"id":"c1","name":"list_globals","args":{}}}]}}
+                {"finishReason":"STOP","content":{"parts":[{"functionCall":{"id":"c1","name":"list_globals","args":{}},"thoughtSignature":"abc123"}]}}
             ]
         }"#;
 
@@ -376,7 +399,11 @@ mod tests {
         assert_eq!(out.candidates[0].finish_reason.as_deref(), Some("STOP"));
         assert!(matches!(
             out.candidates[0].message.parts.first(),
-            Some(AssistantPart::FunctionCall { name, .. }) if name == "list_globals"
+            Some(AssistantPart::FunctionCall {
+                name,
+                thought_signature: Some(sig),
+                ..
+            }) if name == "list_globals" && sig == "abc123"
         ));
     }
 

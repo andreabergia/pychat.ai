@@ -13,16 +13,21 @@ pub enum AssistantRole {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantPart {
-    Text(String),
+    Text {
+        text: String,
+        thought_signature: Option<String>,
+    },
     FunctionCall {
         id: Option<String>,
         name: String,
         args_json: Value,
+        thought_signature: Option<String>,
     },
     FunctionResponse {
         id: Option<String>,
         name: String,
         response_json: Value,
+        thought_signature: Option<String>,
     },
 }
 

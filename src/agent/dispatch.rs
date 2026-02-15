@@ -33,6 +33,7 @@ pub fn dispatch_calls<C: CapabilityProvider>(
                 id: call.id.clone(),
                 name: call.name.clone(),
                 response_json,
+                thought_signature: None,
             }
         })
         .collect()

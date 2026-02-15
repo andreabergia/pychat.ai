@@ -44,7 +44,10 @@ pub async fn run_question<P: LlmProvider, C: CapabilityProvider>(
 ) -> Result<AgentAnswer> {
     let mut messages = vec![AssistantMessage {
         role: AssistantRole::User,
-        parts: vec![AssistantPart::Text(question.to_string())],
+        parts: vec![AssistantPart::Text {
+            text: question.to_string(),
+            thought_signature: None,
+        }],
     }];
     let tools = tool_declarations();
     let total_deadline = Instant::now() + Duration::from_millis(config.total_timeout_ms);
@@ -142,10 +145,11 @@ fn degraded(message: impl Into<String>) -> AgentAnswer {
 fn repair_prompt_message() -> AssistantMessage {
     AssistantMessage {
         role: AssistantRole::User,
-        parts: vec![AssistantPart::Text(
-            "Your previous response was invalid for this tool loop. Either call a declared function or provide a non-empty plain-text final answer."
+        parts: vec![AssistantPart::Text {
+            text: "Your previous response was invalid for this tool loop. Either call a declared function or provide a non-empty plain-text final answer."
                 .to_string(),
-        )],
+            thought_signature: None,
+        }],
     }
 }
 
@@ -163,6 +167,7 @@ fn extract_function_calls(parts: &[AssistantPart]) -> Vec<FunctionCallSpec> {
                 id,
                 name,
                 args_json,
+                ..
             } => Some(FunctionCallSpec {
                 id: id.clone(),
                 name: name.clone(),
@@ -177,7 +182,7 @@ fn extract_text(parts: &[AssistantPart]) -> String {
     parts
         .iter()
         .filter_map(|part| match part {
-            AssistantPart::Text(text) => {
+            AssistantPart::Text { text, .. } => {
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
                     None
@@ -238,6 +243,7 @@ mod tests {
                             id: Some("c1".to_string()),
                             name: "list_globals".to_string(),
                             args_json: json!({}),
+                            thought_signature: Some("sig".to_string()),
                         }],
                     },
                     finish_reason: Some("STOP".to_string()),
@@ -248,7 +254,10 @@ mod tests {
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
-                        parts: vec![AssistantPart::Text("done".to_string())],
+                        parts: vec![AssistantPart::Text {
+                            text: "done".to_string(),
+                            thought_signature: None,
+                        }],
                     },
                     finish_reason: Some("STOP".to_string()),
                     safety_blocked: false,
