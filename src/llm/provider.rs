@@ -7,6 +7,7 @@ use serde_json::Value;
 pub enum AssistantRole {
     User,
     Model,
+    #[allow(dead_code)]
     Tool,
 }
 

@@ -368,7 +368,10 @@ mod tests {
         )
         .expect("provider");
 
-        let out = provider.generate(basic_input()).await.expect("success response");
+        let out = provider
+            .generate(basic_input())
+            .await
+            .expect("success response");
         assert_eq!(out.candidates.len(), 1);
         assert_eq!(out.candidates[0].finish_reason.as_deref(), Some("STOP"));
         assert!(matches!(

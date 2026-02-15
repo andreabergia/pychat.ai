@@ -1,9 +1,11 @@
+mod agent;
 mod cli;
 mod config;
 mod http;
 mod llm;
 mod python;
 
+use agent::AgentConfig;
 use anyhow::Result;
 use clap::Parser;
 use cli::{AppState, CliArgs, Mode, run_repl};
@@ -33,6 +35,7 @@ async fn main() -> Result<()> {
         mode: Mode::Python,
         python,
         llm,
+        agent_config: AgentConfig::default(),
     };
 
     run_repl(&mut app_state).await

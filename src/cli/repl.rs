@@ -1,8 +1,5 @@
-use crate::llm::{
-    ASSISTANT_SYSTEM_PROMPT,
-    gemini::GeminiProvider,
-    provider::{AssistantInput, AssistantMessage, AssistantPart, AssistantRole, LlmProvider, ToolCallingMode},
-};
+use crate::agent::{AgentConfig, run_question};
+use crate::llm::gemini::GeminiProvider;
 use crate::python::{PythonSession, UserRunResult};
 use anyhow::Result;
 use rustyline::error::ReadlineError;
@@ -22,6 +19,7 @@ pub struct AppState {
     pub mode: Mode,
     pub python: PythonSession,
     pub llm: Option<GeminiProvider>,
+    pub agent_config: AgentConfig,
 }
 
 #[derive(Default)]
@@ -182,36 +180,8 @@ async fn handle_line(state: &mut AppState, line: &str) {
                 return;
             };
 
-            match provider
-                .generate(AssistantInput {
-                    system_instruction: Some(ASSISTANT_SYSTEM_PROMPT.trim().to_string()),
-                    messages: vec![AssistantMessage {
-                        role: AssistantRole::User,
-                        parts: vec![AssistantPart::Text(line.to_string())],
-                    }],
-                    tools: Vec::new(),
-                    tool_calling_mode: ToolCallingMode::Auto,
-                })
-                .await
-            {
-                Ok(output) => {
-                    let text = output
-                        .candidates
-                        .iter()
-                        .flat_map(|c| c.message.parts.iter())
-                        .filter_map(|part| match part {
-                            AssistantPart::Text(t) if !t.trim().is_empty() => Some(t.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    if text.is_empty() {
-                        println!("Assistant returned no text response.");
-                    } else {
-                        println!("{text}");
-                    }
-                }
+            match run_question(provider, &state.python, line, &state.agent_config).await {
+                Ok(answer) => println!("{}", answer.text),
                 Err(err) => println!("Assistant request failed: {err}"),
             }
         }
