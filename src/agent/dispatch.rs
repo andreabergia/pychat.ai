@@ -16,8 +16,7 @@ pub fn tool_declarations() -> Vec<FunctionDeclaration> {
         description: "List currently defined Python globals and their type names".to_string(),
         parameters_json_schema: json!({
             "type": "object",
-            "properties": {},
-            "additionalProperties": false
+            "properties": {}
         }),
     }]
 }
