@@ -72,7 +72,6 @@ pub struct AssistantOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LlmError {
     MissingApiKey,
-    FunctionCallingUnsupported { model: String, details: String },
     HttpStatus { status: u16, body: String },
     Transport(String),
     Parse(String),
@@ -83,12 +82,6 @@ impl Display for LlmError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingApiKey => write!(f, "missing GEMINI_API_KEY"),
-            Self::FunctionCallingUnsupported { model, details } => {
-                write!(
-                    f,
-                    "model {model} does not support function calling: {details}"
-                )
-            }
             Self::HttpStatus { status, body } => {
                 write!(f, "provider request failed with status {status}: {body}")
             }

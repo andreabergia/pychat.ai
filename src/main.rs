@@ -31,16 +31,6 @@ async fn main() -> Result<()> {
     )
     .ok();
 
-    if let Some(provider) = &llm
-        && let Err(llm::provider::LlmError::FunctionCallingUnsupported { model, details }) =
-            provider.verify_function_calling_support().await
-    {
-        anyhow::bail!(
-            "Configured GEMINI_MODEL ({model}) does not support function calling. \
-Set GEMINI_MODEL to a function-calling capable model and retry. Provider details: {details}"
-        );
-    }
-
     let mut app_state = AppState {
         mode: Mode::Python,
         python,

@@ -41,43 +41,6 @@ impl GeminiProvider {
         )
     }
 
-    pub async fn verify_function_calling_support(&self) -> LlmResult<()> {
-        let probe = AssistantInput {
-            system_instruction: Some(
-                "Return plain text. If tools are available, you may call noop once.".to_string(),
-            ),
-            messages: vec![AssistantMessage {
-                role: AssistantRole::User,
-                parts: vec![AssistantPart::Text {
-                    text: "probe".to_string(),
-                    thought_signature: None,
-                }],
-            }],
-            tools: vec![FunctionDeclaration {
-                name: "noop".to_string(),
-                description: "No-op function for capability probe".to_string(),
-                parameters_json_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            }],
-            tool_calling_mode: ToolCallingMode::Auto,
-        };
-
-        match self.generate(probe).await {
-            Ok(_) => Ok(()),
-            Err(LlmError::HttpStatus { status: 400, body })
-                if indicates_function_calling_unsupported(&body) =>
-            {
-                Err(LlmError::FunctionCallingUnsupported {
-                    model: self.model.clone(),
-                    details: body,
-                })
-            }
-            Err(other) => Err(other),
-        }
-    }
-
     fn build_request(input: &AssistantInput) -> GeminiGenerateRequest {
         GeminiGenerateRequest {
             contents: input
@@ -234,15 +197,6 @@ impl GeminiProvider {
             thought_signature,
         })
     }
-}
-
-fn indicates_function_calling_unsupported(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    (lower.contains("function") || lower.contains("tool"))
-        && (lower.contains("not support")
-            || lower.contains("unsupported")
-            || lower.contains("not available")
-            || lower.contains("not enabled"))
 }
 
 impl LlmProvider for GeminiProvider {
@@ -571,48 +525,6 @@ mod tests {
             .expect_err("expected empty candidates error");
 
         assert_eq!(err, LlmError::EmptyCandidates);
-    }
-
-    #[tokio::test]
-    async fn verify_function_calling_support_maps_unsupported_400() {
-        let server = MockServer::start().await;
-        let body =
-            "This model does not support function calling. Use a function-calling capable model.";
-
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(400).set_body_string(body))
-            .mount(&server)
-            .await;
-
-        let provider = GeminiProvider::new(
-            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
-            Some("test-key".to_string()),
-            "test-model".to_string(),
-            server.uri(),
-        )
-        .expect("provider");
-
-        let err = provider
-            .verify_function_calling_support()
-            .await
-            .expect_err("expected unsupported error");
-
-        match err {
-            LlmError::FunctionCallingUnsupported { model, details } => {
-                assert_eq!(model, "test-model");
-                assert!(details.contains("does not support function calling"));
-            }
-            other => panic!("expected FunctionCallingUnsupported, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unsupported_detector_matches_expected_text() {
-        let text = "This model does not support function calling.";
-        assert!(super::indicates_function_calling_unsupported(text));
-        assert!(!super::indicates_function_calling_unsupported(
-            "rate limited, please retry"
-        ));
     }
 
     #[test]
