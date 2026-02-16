@@ -154,10 +154,10 @@ impl Theme {
 
         match mode {
             Mode::Python => Style::default()
-                .fg(Color::Indexed(41))
+                .fg(Color::Rgb(158, 206, 106))
                 .add_modifier(Modifier::BOLD),
             Mode::Assistant => Style::default()
-                .fg(Color::Indexed(33))
+                .fg(Color::Rgb(122, 162, 247))
                 .add_modifier(Modifier::BOLD),
         }
     }
@@ -168,25 +168,29 @@ impl Theme {
         }
 
         match kind {
-            OutputKind::UserInputPython => Style::default().fg(Color::Indexed(29)),
-            OutputKind::UserInputAssistant => Style::default().fg(Color::Indexed(24)),
-            OutputKind::PythonValue => Style::default().fg(Color::Indexed(220)),
-            OutputKind::PythonStdout => Style::default().fg(Color::Indexed(252)),
-            OutputKind::PythonStderr => Style::default().fg(Color::Indexed(208)),
+            OutputKind::UserInputPython => Style::default()
+                .fg(Color::Rgb(158, 206, 106))
+                .add_modifier(Modifier::DIM),
+            OutputKind::UserInputAssistant => Style::default()
+                .fg(Color::Rgb(122, 162, 247))
+                .add_modifier(Modifier::DIM),
+            OutputKind::PythonValue => Style::default().fg(Color::Rgb(224, 175, 104)),
+            OutputKind::PythonStdout => Style::default().fg(Color::Rgb(192, 202, 245)),
+            OutputKind::PythonStderr => Style::default().fg(Color::Rgb(255, 158, 100)),
             OutputKind::PythonTraceback => Style::default()
-                .fg(Color::Indexed(196))
+                .fg(Color::Rgb(247, 118, 142))
                 .add_modifier(Modifier::BOLD),
-            OutputKind::AssistantText => Style::default().fg(Color::Indexed(118)),
-            OutputKind::SystemInfo => Style::default().fg(Color::Indexed(245)),
+            OutputKind::AssistantText => Style::default().fg(Color::Rgb(125, 207, 255)),
+            OutputKind::SystemInfo => Style::default().fg(Color::Rgb(86, 95, 137)),
             OutputKind::SystemError => Style::default()
-                .fg(Color::Indexed(203))
+                .fg(Color::Rgb(247, 118, 142))
                 .add_modifier(Modifier::BOLD),
         }
     }
 
     fn status_style(&self) -> Style {
         if self.enabled {
-            Style::default().fg(Color::Indexed(244))
+            Style::default().fg(Color::Rgb(86, 95, 137))
         } else {
             Style::default()
         }
@@ -194,7 +198,9 @@ impl Theme {
 
     fn input_block_style(&self) -> Style {
         if self.enabled {
-            Style::default().bg(Color::Indexed(236))
+            Style::default()
+                .bg(Color::Rgb(22, 22, 30))
+                .fg(Color::Rgb(169, 177, 214))
         } else {
             Style::default()
         }
