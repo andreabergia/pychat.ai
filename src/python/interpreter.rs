@@ -41,6 +41,13 @@ pub enum UserRunResult {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputCompleteness {
+    Complete,
+    Incomplete,
+    Invalid,
+}
+
 pub struct PythonSession {
     main_module: Py<PyModule>,
 }
@@ -123,6 +130,26 @@ impl PythonSession {
                     exception: Self::dict_exception(&result)?,
                 }),
                 _ => anyhow::bail!("unknown user run result kind: {kind}"),
+            }
+        })
+    }
+
+    pub fn check_input_completeness(&self, source: &str) -> Result<InputCompleteness> {
+        Python::attach(|py| -> Result<InputCompleteness> {
+            let main = self.main_module.bind(py);
+            let result =
+                Self::call_runtime_helper(main, "_pyaichat_check_input_complete", (source,))?;
+            if !Self::result_ok(&result)? {
+                let exception = Self::dict_exception(&result)?;
+                anyhow::bail!("{}", exception.traceback)
+            }
+
+            let status = Self::dict_string(&result, "status")?;
+            match status.as_str() {
+                "complete" => Ok(InputCompleteness::Complete),
+                "incomplete" => Ok(InputCompleteness::Incomplete),
+                "invalid" => Ok(InputCompleteness::Invalid),
+                _ => anyhow::bail!("unknown completeness status: {status}"),
             }
         })
     }
@@ -465,7 +492,7 @@ mod tests {
     use pyo3::prelude::Python;
     use pyo3::types::PyModuleMethods;
 
-    use super::{PythonSession, UserRunResult};
+    use super::{InputCompleteness, PythonSession, UserRunResult};
 
     #[test]
     fn exec_persists_state_across_calls() {
@@ -501,6 +528,29 @@ mod tests {
 
         let roundtrip = session.eval_expr("answer").expect("eval answer");
         assert_eq!(roundtrip.value_repr, "123");
+    }
+
+    #[test]
+    fn input_completeness_classifies_complete_incomplete_and_invalid() {
+        let session = PythonSession::initialize().expect("python session");
+        assert_eq!(
+            session
+                .check_input_completeness("x = 1")
+                .expect("complete status"),
+            InputCompleteness::Complete
+        );
+        assert_eq!(
+            session
+                .check_input_completeness("if True:")
+                .expect("incomplete status"),
+            InputCompleteness::Incomplete
+        );
+        assert_eq!(
+            session
+                .check_input_completeness("if True")
+                .expect("invalid status"),
+            InputCompleteness::Invalid
+        );
     }
 
     #[test]

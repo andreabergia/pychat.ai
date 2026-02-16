@@ -8,4 +8,6 @@ pub use capabilities::{
     TypeInfo,
 };
 #[allow(unused_imports)]
-pub use interpreter::{EvalResult, ExceptionInfo, ExecResult, PythonSession, UserRunResult};
+pub use interpreter::{
+    EvalResult, ExceptionInfo, ExecResult, InputCompleteness, PythonSession, UserRunResult,
+};

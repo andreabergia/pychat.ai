@@ -1,6 +1,6 @@
 use crate::agent::{AgentConfig, run_question};
 use crate::llm::gemini::GeminiProvider;
-use crate::python::{PythonSession, UserRunResult};
+use crate::python::{InputCompleteness, PythonSession, UserRunResult};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -260,7 +260,11 @@ async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: Key
             ui_state.history_index = None;
         }
         KeyCode::Enter => {
-            submit_current_line(state, ui_state).await;
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                insert_python_newline(ui_state);
+            } else {
+                handle_enter(state, ui_state).await;
+            }
         }
         KeyCode::Backspace => {
             ui_state.current_input_mut().pop();
@@ -278,6 +282,9 @@ async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: Key
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             ui_state.should_quit = true;
         }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            insert_python_newline(ui_state);
+        }
         KeyCode::Char(ch) => {
             ui_state.current_input_mut().push(ch);
             ui_state.history_index = None;
@@ -286,11 +293,58 @@ async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: Key
     }
 }
 
-async fn submit_current_line(state: &mut AppState, ui_state: &mut UiState) {
-    let line = ui_state.current_input_mut().trim().to_string();
-    ui_state.current_input_mut().clear();
+async fn handle_enter(state: &mut AppState, ui_state: &mut UiState) {
+    if ui_state.mode != Mode::Python {
+        submit_current_line(state, ui_state).await;
+        return;
+    }
 
-    if line.is_empty() {
+    if ui_state.current_input().trim().is_empty() {
+        submit_current_line(state, ui_state).await;
+        return;
+    }
+
+    match state
+        .python
+        .check_input_completeness(ui_state.current_input())
+    {
+        Ok(InputCompleteness::Incomplete) => insert_python_newline(ui_state),
+        Ok(InputCompleteness::Complete) | Ok(InputCompleteness::Invalid) => {
+            submit_current_line(state, ui_state).await;
+        }
+        Err(err) => {
+            ui_state.push_output(
+                OutputKind::SystemError,
+                &format!("error checking python input completeness: {err}"),
+            );
+            submit_current_line(state, ui_state).await;
+        }
+    }
+}
+
+fn insert_python_newline(ui_state: &mut UiState) {
+    if ui_state.mode != Mode::Python {
+        return;
+    }
+    append_newline_with_indent(&mut ui_state.python_input);
+    ui_state.history_index = None;
+}
+
+async fn submit_current_line(state: &mut AppState, ui_state: &mut UiState) {
+    let line = match ui_state.mode {
+        Mode::Python => {
+            let line = ui_state.python_input.clone();
+            ui_state.python_input.clear();
+            line
+        }
+        Mode::Assistant => {
+            let line = ui_state.assistant_input.trim().to_string();
+            ui_state.assistant_input.clear();
+            line
+        }
+    };
+
+    if line.trim().is_empty() {
         return;
     }
 
@@ -364,11 +418,18 @@ async fn submit_current_line(state: &mut AppState, ui_state: &mut UiState) {
 }
 
 fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
+    let prompt = prompt_for(ui_state.mode);
+    let input_lines = render_input_lines(ui_state.current_input());
+    let input_line_count = input_lines.len().max(1);
+    let max_input_lines = 6usize;
+    let input_visible_lines = input_line_count.min(max_input_lines);
+    let input_height = u16::try_from(input_visible_lines.saturating_add(2)).unwrap_or(u16::MAX);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -398,19 +459,33 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .scroll((scroll, 0));
     frame.render_widget(output, chunks[0]);
 
-    let prompt = prompt_for(ui_state.mode);
-    let input = ui_state.current_input();
-    let input_line = Line::from(vec![
-        Span::styled(prompt, ui_state.theme.prompt_style(ui_state.mode)),
-        Span::styled(input, ui_state.theme.input_block_style()),
-    ]);
-    let input_widget = Paragraph::new(input_line)
+    let input_scroll =
+        u16::try_from(input_line_count.saturating_sub(input_visible_lines)).unwrap_or(u16::MAX);
+    let prompt_padding = " ".repeat(prompt.chars().count());
+    let mut rendered_lines = Vec::with_capacity(input_lines.len());
+    for (idx, line) in input_lines.into_iter().enumerate() {
+        let prompt_span = if idx == 0 {
+            Span::styled(prompt, ui_state.theme.prompt_style(ui_state.mode))
+        } else {
+            Span::styled(
+                prompt_padding.clone(),
+                ui_state.theme.prompt_style(ui_state.mode),
+            )
+        };
+        rendered_lines.push(Line::from(vec![
+            prompt_span,
+            Span::styled(line, ui_state.theme.input_block_style()),
+        ]));
+    }
+
+    let input_widget = Paragraph::new(rendered_lines)
         .block(
             Block::default()
                 .padding(Padding::new(1, 1, 1, 1))
                 .style(ui_state.theme.input_block_style()),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((input_scroll, 0));
     frame.render_widget(input_widget, chunks[1]);
 
     let mode_text = match ui_state.mode {
@@ -425,12 +500,17 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(status_right, chunks[2]);
 
+    let (cursor_row, cursor_col) = input_cursor_position(ui_state.current_input());
+    let cursor_row = cursor_row.saturating_sub(usize::from(input_scroll));
     let cursor_x = chunks[1]
         .x
         .saturating_add(1)
         .saturating_add(u16::try_from(prompt.chars().count()).unwrap_or(u16::MAX))
-        .saturating_add(u16::try_from(input.chars().count()).unwrap_or(u16::MAX));
-    let cursor_y = chunks[1].y.saturating_add(1);
+        .saturating_add(u16::try_from(cursor_col).unwrap_or(u16::MAX));
+    let cursor_y = chunks[1]
+        .y
+        .saturating_add(1)
+        .saturating_add(u16::try_from(cursor_row).unwrap_or(u16::MAX));
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
@@ -440,6 +520,40 @@ fn split_output_lines(text: &str) -> Vec<&str> {
     }
 
     text.lines().collect()
+}
+
+fn last_line_indent(input: &str) -> String {
+    input
+        .rsplit('\n')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .collect()
+}
+
+fn append_newline_with_indent(input: &mut String) {
+    let indent = last_line_indent(input);
+    input.push('\n');
+    input.push_str(&indent);
+}
+
+fn render_input_lines(input: &str) -> Vec<&str> {
+    if input.is_empty() {
+        return vec![""];
+    }
+    input.split('\n').collect()
+}
+
+fn input_cursor_position(input: &str) -> (usize, usize) {
+    if input.is_empty() {
+        return (0, 0);
+    }
+
+    let lines: Vec<&str> = input.split('\n').collect();
+    let row = lines.len().saturating_sub(1);
+    let col = lines[row].chars().count();
+    (row, col)
 }
 
 fn resolve_color_enabled() -> bool {
@@ -487,7 +601,10 @@ fn toggle_mode(mode: Mode) -> Mode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, prompt_for, resolve_color_enabled_with, split_output_lines, toggle_mode};
+    use super::{
+        Mode, append_newline_with_indent, input_cursor_position, last_line_indent, prompt_for,
+        resolve_color_enabled_with, split_output_lines, toggle_mode,
+    };
 
     #[test]
     fn test_toggle_mode() {
@@ -529,5 +646,26 @@ mod tests {
     fn split_lines_works() {
         assert_eq!(split_output_lines("a\nb\n"), vec!["a", "b"]);
         assert!(split_output_lines("").is_empty());
+    }
+
+    #[test]
+    fn last_line_indent_uses_only_leading_whitespace() {
+        assert_eq!(last_line_indent("    if True:"), "    ");
+        assert_eq!(last_line_indent("x = 1"), "");
+        assert_eq!(last_line_indent("x = 1\n\t  y = 2"), "\t  ");
+    }
+
+    #[test]
+    fn append_newline_with_indent_copies_previous_indent() {
+        let mut input = "if True:\n    x = 1".to_string();
+        append_newline_with_indent(&mut input);
+        assert_eq!(input, "if True:\n    x = 1\n    ");
+    }
+
+    #[test]
+    fn input_cursor_position_tracks_multiline_tail() {
+        assert_eq!(input_cursor_position(""), (0, 0));
+        assert_eq!(input_cursor_position("abc"), (0, 3));
+        assert_eq!(input_cursor_position("a\nbc"), (1, 2));
     }
 }

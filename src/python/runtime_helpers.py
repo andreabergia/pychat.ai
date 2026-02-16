@@ -1,3 +1,4 @@
+import codeop
 import contextlib
 import io
 import traceback
@@ -104,6 +105,17 @@ def _pyaichat_run_user_input(line):
     result = _pyaichat_eval_expr(line)
     result["kind"] = "evaluated"
     return result
+
+
+def _pyaichat_check_input_complete(source):
+    try:
+        compiled = codeop.compile_command(source, "<stdin>", "exec")
+        status = "incomplete" if compiled is None else "complete"
+        return {"ok": True, "status": status}
+    except (SyntaxError, OverflowError, ValueError, TypeError):
+        return {"ok": True, "status": "invalid"}
+    except BaseException as exc:
+        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
 
 
 def _pyaichat_list_globals():
