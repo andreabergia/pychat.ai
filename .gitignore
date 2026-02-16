@@ -28,3 +28,4 @@ test-results/
 
 # Local config
 .env
+.cargo/config.toml
