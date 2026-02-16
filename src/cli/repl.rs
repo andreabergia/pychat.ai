@@ -269,6 +269,9 @@ async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: Key
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             ui_state.should_quit = true;
         }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ui_state.should_quit = true;
+        }
         KeyCode::Char(ch) => {
             ui_state.current_input_mut().push(ch);
             ui_state.history_index = None;
