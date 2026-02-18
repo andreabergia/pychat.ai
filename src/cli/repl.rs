@@ -465,35 +465,17 @@ async fn submit_current_line(
             let mut on_event = |event: AgentProgressEvent| {
                 match event {
                     AgentProgressEvent::StepStarted { .. } => {}
-                    AgentProgressEvent::ModelResponse {
-                        step,
-                        thought_signatures,
-                        tool_calls,
-                        has_text,
-                    } => {
-                        let text = format!(
-                            "step {step}: model response (thinking parts: {thought_signatures}, tool calls: {tool_calls}, text: {})",
-                            if has_text { "yes" } else { "no" }
-                        );
-                        if progress_started {
-                            ui_state.push_output_line(OutputKind::AssistantProgress, text);
-                        } else {
-                            ui_state.replace_output_at(
-                                waiting_index,
-                                OutputKind::AssistantProgress,
-                                &text,
-                            );
-                            progress_started = true;
-                        }
+                    AgentProgressEvent::ModelResponse { .. } => {
+                        // Keep model response metadata internal; show only tool-level progress.
                     }
                     AgentProgressEvent::ToolRequest {
-                        step,
+                        step: _,
                         id,
                         name,
                         args_json,
                     } => {
                         let text = format!(
-                            "step {step}: tool request {}{} args={}",
+                            "model requested tool {}{} {}",
                             name,
                             id.as_deref()
                                 .map(|value| format!(" ({value})"))
@@ -512,22 +494,17 @@ async fn submit_current_line(
                         }
                     }
                     AgentProgressEvent::ToolResult {
-                        step,
+                        step: _,
                         id,
                         name,
                         response_json,
                     } => {
-                        let ok = response_json
-                            .get("ok")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
                         let text = format!(
-                            "step {step}: tool result {}{} => {} {}",
+                            "tool result {}{} {}",
                             name,
                             id.as_deref()
                                 .map(|value| format!(" ({value})"))
                                 .unwrap_or_default(),
-                            if ok { "ok" } else { "error" },
                             compact_json(&response_json),
                         );
                         if progress_started {
