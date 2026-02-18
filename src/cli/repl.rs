@@ -186,7 +186,7 @@ impl Theme {
                 .fg(Color::Rgb(158, 206, 106))
                 .add_modifier(Modifier::BOLD),
             Mode::Assistant => Style::default()
-                .fg(Color::Rgb(122, 162, 247))
+                .fg(Color::Rgb(219, 75, 75))
                 .add_modifier(Modifier::BOLD),
         }
     }
@@ -197,23 +197,22 @@ impl Theme {
         }
 
         match kind {
-            OutputKind::UserInputPython => Style::default()
-                .fg(Color::Rgb(158, 206, 106))
-                .add_modifier(Modifier::DIM),
-            OutputKind::UserInputAssistant => Style::default()
-                .fg(Color::Rgb(122, 162, 247))
-                .add_modifier(Modifier::DIM),
-            OutputKind::PythonValue => Style::default().fg(Color::Rgb(224, 175, 104)),
+            OutputKind::UserInputPython | OutputKind::UserInputAssistant => {
+                Style::default().fg(Color::White)
+            }
+            OutputKind::PythonValue => Style::default().fg(Color::Rgb(158, 206, 106)),
             OutputKind::PythonStdout => Style::default().fg(Color::Rgb(192, 202, 245)),
             OutputKind::PythonStderr => Style::default().fg(Color::Rgb(255, 158, 100)),
             OutputKind::PythonTraceback => Style::default()
                 .fg(Color::Rgb(247, 118, 142))
                 .add_modifier(Modifier::BOLD),
-            OutputKind::AssistantText => Style::default().fg(Color::Rgb(125, 207, 255)),
+            OutputKind::AssistantText => Style::default().fg(Color::Rgb(219, 75, 75)),
             OutputKind::AssistantWaiting => Style::default()
                 .fg(Color::Rgb(86, 95, 137))
                 .add_modifier(Modifier::ITALIC),
-            OutputKind::AssistantProgress => Style::default().fg(Color::Rgb(147, 153, 178)),
+            OutputKind::AssistantProgress => Style::default()
+                .fg(Color::Rgb(147, 153, 178))
+                .add_modifier(Modifier::ITALIC),
             OutputKind::SystemInfo => Style::default().fg(Color::Rgb(86, 95, 137)),
             OutputKind::SystemError => Style::default()
                 .fg(Color::Rgb(247, 118, 142))
@@ -231,9 +230,7 @@ impl Theme {
 
     fn input_block_style(&self) -> Style {
         if self.enabled {
-            Style::default()
-                .bg(Color::Rgb(22, 22, 30))
-                .fg(Color::Rgb(169, 177, 214))
+            Style::default().bg(Color::Rgb(22, 22, 30)).fg(Color::White)
         } else {
             Style::default()
         }
@@ -403,12 +400,11 @@ async fn submit_current_line(
         return Ok(());
     }
 
-    let prompt = prompt_for(ui_state.mode);
     let input_kind = match ui_state.mode {
         Mode::Python => OutputKind::UserInputPython,
         Mode::Assistant => OutputKind::UserInputAssistant,
     };
-    ui_state.push_output(input_kind, &format!("{prompt}{line}"));
+    ui_state.push_output(input_kind, &line);
     ui_state.push_history(&line);
 
     match ui_state.mode {
@@ -586,10 +582,25 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         )));
     } else {
         for entry in &ui_state.scrollback {
-            lines.push(Line::from(Span::styled(
-                entry.text.clone(),
-                ui_state.theme.output_style(entry.kind),
-            )));
+            let line = match entry.kind {
+                OutputKind::UserInputPython => Line::from(vec![
+                    Span::styled("py> ", ui_state.theme.prompt_style(Mode::Python)),
+                    Span::styled(entry.text.clone(), ui_state.theme.output_style(entry.kind)),
+                ]),
+                OutputKind::UserInputAssistant => Line::from(vec![
+                    Span::styled("ai> ", ui_state.theme.prompt_style(Mode::Assistant)),
+                    Span::styled(entry.text.clone(), ui_state.theme.output_style(entry.kind)),
+                ]),
+                _ => Line::from(Span::styled(
+                    entry.text.clone(),
+                    ui_state.theme.output_style(entry.kind),
+                )),
+            };
+            lines.push(line);
+            if entry.kind == OutputKind::AssistantProgress && entry.text.starts_with("tool result ")
+            {
+                lines.push(Line::from(""));
+            }
         }
     }
 
