@@ -38,6 +38,7 @@ enum OutputKind {
     PythonStderr,
     PythonTraceback,
     AssistantText,
+    AssistantWaiting,
     SystemInfo,
     SystemError,
 }
@@ -94,6 +95,33 @@ impl UiState {
                 kind,
                 text: line.to_string(),
             });
+        }
+    }
+
+    fn push_output_line(&mut self, kind: OutputKind, text: impl Into<String>) -> usize {
+        let index = self.scrollback.len();
+        self.scrollback.push(OutputEntry {
+            kind,
+            text: text.into(),
+        });
+        index
+    }
+
+    fn replace_output_at(&mut self, index: usize, kind: OutputKind, text: &str) {
+        if index >= self.scrollback.len() {
+            self.push_output(kind, text);
+            return;
+        }
+
+        self.scrollback.remove(index);
+        for (inserted, line) in split_output_lines(text).into_iter().enumerate() {
+            self.scrollback.insert(
+                index + inserted,
+                OutputEntry {
+                    kind,
+                    text: line.to_string(),
+                },
+            );
         }
     }
 
@@ -181,6 +209,9 @@ impl Theme {
                 .fg(Color::Rgb(247, 118, 142))
                 .add_modifier(Modifier::BOLD),
             OutputKind::AssistantText => Style::default().fg(Color::Rgb(125, 207, 255)),
+            OutputKind::AssistantWaiting => Style::default()
+                .fg(Color::Rgb(86, 95, 137))
+                .add_modifier(Modifier::ITALIC),
             OutputKind::SystemInfo => Style::default().fg(Color::Rgb(86, 95, 137)),
             OutputKind::SystemError => Style::default()
                 .fg(Color::Rgb(247, 118, 142))
@@ -245,7 +276,7 @@ async fn run_tui_loop(
         }
 
         if let Event::Key(key) = event::read()? {
-            handle_key_event(state, ui_state, key).await;
+            handle_key_event(terminal, state, ui_state, key).await?;
         }
     }
 
@@ -253,7 +284,12 @@ async fn run_tui_loop(
     Ok(())
 }
 
-async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: KeyEvent) {
+async fn handle_key_event(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    state: &mut AppState,
+    ui_state: &mut UiState,
+    key: KeyEvent,
+) -> Result<()> {
     match key.code {
         KeyCode::Tab => {
             ui_state.mode = toggle_mode(ui_state.mode);
@@ -263,7 +299,7 @@ async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: Key
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 insert_python_newline(ui_state);
             } else {
-                handle_enter(state, ui_state).await;
+                handle_enter(terminal, state, ui_state).await?;
             }
         }
         KeyCode::Backspace => {
@@ -291,17 +327,23 @@ async fn handle_key_event(state: &mut AppState, ui_state: &mut UiState, key: Key
         }
         _ => {}
     }
+
+    Ok(())
 }
 
-async fn handle_enter(state: &mut AppState, ui_state: &mut UiState) {
+async fn handle_enter(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    state: &mut AppState,
+    ui_state: &mut UiState,
+) -> Result<()> {
     if ui_state.mode != Mode::Python {
-        submit_current_line(state, ui_state).await;
-        return;
+        submit_current_line(terminal, state, ui_state).await?;
+        return Ok(());
     }
 
     if ui_state.current_input().trim().is_empty() {
-        submit_current_line(state, ui_state).await;
-        return;
+        submit_current_line(terminal, state, ui_state).await?;
+        return Ok(());
     }
 
     match state
@@ -310,16 +352,18 @@ async fn handle_enter(state: &mut AppState, ui_state: &mut UiState) {
     {
         Ok(InputCompleteness::Incomplete) => insert_python_newline(ui_state),
         Ok(InputCompleteness::Complete) | Ok(InputCompleteness::Invalid) => {
-            submit_current_line(state, ui_state).await;
+            submit_current_line(terminal, state, ui_state).await?;
         }
         Err(err) => {
             ui_state.push_output(
                 OutputKind::SystemError,
                 &format!("error checking python input completeness: {err}"),
             );
-            submit_current_line(state, ui_state).await;
+            submit_current_line(terminal, state, ui_state).await?;
         }
     }
+
+    Ok(())
 }
 
 fn insert_python_newline(ui_state: &mut UiState) {
@@ -330,7 +374,11 @@ fn insert_python_newline(ui_state: &mut UiState) {
     ui_state.history_index = None;
 }
 
-async fn submit_current_line(state: &mut AppState, ui_state: &mut UiState) {
+async fn submit_current_line(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    state: &mut AppState,
+    ui_state: &mut UiState,
+) -> Result<()> {
     let line = match ui_state.mode {
         Mode::Python => {
             let line = ui_state.python_input.clone();
@@ -345,12 +393,12 @@ async fn submit_current_line(state: &mut AppState, ui_state: &mut UiState) {
     };
 
     if line.trim().is_empty() {
-        return;
+        return Ok(());
     }
 
     if line.eq_ignore_ascii_case("exit") || line.eq_ignore_ascii_case("quit") {
         ui_state.should_quit = true;
-        return;
+        return Ok(());
     }
 
     let prompt = prompt_for(ui_state.mode);
@@ -403,18 +451,29 @@ async fn submit_current_line(state: &mut AppState, ui_state: &mut UiState) {
                     OutputKind::SystemError,
                     "Assistant unavailable: missing GEMINI_API_KEY. Configure it in your shell or .env file (example: GEMINI_API_KEY=your_key).",
                 );
-                return;
+                return Ok(());
             };
 
+            let waiting_index =
+                ui_state.push_output_line(OutputKind::AssistantWaiting, "waiting...");
+            terminal.draw(|frame| draw_ui(frame, ui_state))?;
+
             match run_question(provider, &state.python, &line, &state.agent_config).await {
-                Ok(answer) => ui_state.push_output(OutputKind::AssistantText, &answer.text),
-                Err(err) => ui_state.push_output(
+                Ok(answer) => ui_state.replace_output_at(
+                    waiting_index,
+                    OutputKind::AssistantText,
+                    &answer.text,
+                ),
+                Err(err) => ui_state.replace_output_at(
+                    waiting_index,
                     OutputKind::SystemError,
                     &format!("Assistant request failed: {err}"),
                 ),
-            }
+            };
         }
     }
+
+    Ok(())
 }
 
 fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
