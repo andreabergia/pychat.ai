@@ -45,9 +45,39 @@ enum OutputKind {
 }
 
 #[derive(Debug, Clone)]
-struct OutputEntry {
-    kind: OutputKind,
-    text: String,
+enum TimelineEntry {
+    UserInputPython(String),
+    UserInputAssistant(String),
+    OutputLine { kind: OutputKind, text: String },
+    AssistantTurn(AssistantTurn),
+}
+
+#[derive(Debug, Clone)]
+struct AssistantTurn {
+    prompt: String,
+    events: Vec<AssistantStepEvent>,
+    state: AssistantTurnState,
+}
+
+#[derive(Debug, Clone)]
+enum AssistantTurnState {
+    InFlight,
+    CompletedText(String),
+    CompletedError(String),
+}
+
+#[derive(Debug, Clone)]
+enum AssistantStepEvent {
+    ToolRequest {
+        id: Option<String>,
+        name: String,
+        args_json: serde_json::Value,
+    },
+    ToolResult {
+        id: Option<String>,
+        name: String,
+        response_json: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -55,9 +85,10 @@ struct UiState {
     mode: Mode,
     python_input: String,
     assistant_input: String,
+    show_assistant_steps: bool,
     history: Vec<String>,
     history_index: Option<usize>,
-    scrollback: Vec<OutputEntry>,
+    timeline: Vec<TimelineEntry>,
     should_quit: bool,
     theme: Theme,
 }
@@ -68,9 +99,10 @@ impl UiState {
             mode,
             python_input: String::new(),
             assistant_input: String::new(),
+            show_assistant_steps: true,
             history: Vec::new(),
             history_index: None,
-            scrollback: Vec::new(),
+            timeline: Vec::new(),
             should_quit: false,
             theme: Theme::new(color_enabled),
         }
@@ -90,39 +122,40 @@ impl UiState {
         }
     }
 
-    fn push_output(&mut self, kind: OutputKind, text: &str) {
+    fn push_timeline_output(&mut self, kind: OutputKind, text: &str) {
         for line in split_output_lines(text) {
-            self.scrollback.push(OutputEntry {
+            self.timeline.push(TimelineEntry::OutputLine {
                 kind,
                 text: line.to_string(),
             });
         }
     }
 
-    fn push_output_line(&mut self, kind: OutputKind, text: impl Into<String>) -> usize {
-        let index = self.scrollback.len();
-        self.scrollback.push(OutputEntry {
-            kind,
-            text: text.into(),
-        });
+    fn push_user_input(&mut self, mode: Mode, text: &str) {
+        for line in split_output_lines(text) {
+            let entry = match mode {
+                Mode::Python => TimelineEntry::UserInputPython(line.to_string()),
+                Mode::Assistant => TimelineEntry::UserInputAssistant(line.to_string()),
+            };
+            self.timeline.push(entry);
+        }
+    }
+
+    fn push_assistant_turn(&mut self, prompt: String) -> usize {
+        let index = self.timeline.len();
+        self.timeline
+            .push(TimelineEntry::AssistantTurn(AssistantTurn {
+                prompt,
+                events: Vec::new(),
+                state: AssistantTurnState::InFlight,
+            }));
         index
     }
 
-    fn replace_output_at(&mut self, index: usize, kind: OutputKind, text: &str) {
-        if index >= self.scrollback.len() {
-            self.push_output(kind, text);
-            return;
-        }
-
-        self.scrollback.remove(index);
-        for (inserted, line) in split_output_lines(text).into_iter().enumerate() {
-            self.scrollback.insert(
-                index + inserted,
-                OutputEntry {
-                    kind,
-                    text: line.to_string(),
-                },
-            );
+    fn assistant_turn_mut(&mut self, index: usize) -> Option<&mut AssistantTurn> {
+        match self.timeline.get_mut(index) {
+            Some(TimelineEntry::AssistantTurn(turn)) => Some(turn),
+            _ => None,
         }
     }
 
@@ -320,6 +353,9 @@ async fn handle_key_event(
         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             insert_python_newline(ui_state);
         }
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ui_state.show_assistant_steps = !ui_state.show_assistant_steps;
+        }
         KeyCode::Char(ch) => {
             ui_state.current_input_mut().push(ch);
             ui_state.history_index = None;
@@ -354,7 +390,7 @@ async fn handle_enter(
             submit_current_line(terminal, state, ui_state).await?;
         }
         Err(err) => {
-            ui_state.push_output(
+            ui_state.push_timeline_output(
                 OutputKind::SystemError,
                 &format!("error checking python input completeness: {err}"),
             );
@@ -400,30 +436,26 @@ async fn submit_current_line(
         return Ok(());
     }
 
-    let input_kind = match ui_state.mode {
-        Mode::Python => OutputKind::UserInputPython,
-        Mode::Assistant => OutputKind::UserInputAssistant,
-    };
-    ui_state.push_output(input_kind, &line);
+    ui_state.push_user_input(ui_state.mode, &line);
     ui_state.push_history(&line);
 
     match ui_state.mode {
         Mode::Python => match state.python.run_user_input(&line) {
             Ok(UserRunResult::Evaluated(result)) => {
                 if !result.stdout.is_empty() {
-                    ui_state.push_output(OutputKind::PythonStdout, &result.stdout);
+                    ui_state.push_timeline_output(OutputKind::PythonStdout, &result.stdout);
                 }
                 if !result.stderr.is_empty() {
-                    ui_state.push_output(OutputKind::PythonStderr, &result.stderr);
+                    ui_state.push_timeline_output(OutputKind::PythonStderr, &result.stderr);
                 }
-                ui_state.push_output(OutputKind::PythonValue, &result.value_repr);
+                ui_state.push_timeline_output(OutputKind::PythonValue, &result.value_repr);
             }
             Ok(UserRunResult::Executed(result)) => {
                 if !result.stdout.is_empty() {
-                    ui_state.push_output(OutputKind::PythonStdout, &result.stdout);
+                    ui_state.push_timeline_output(OutputKind::PythonStdout, &result.stdout);
                 }
                 if !result.stderr.is_empty() {
-                    ui_state.push_output(OutputKind::PythonStderr, &result.stderr);
+                    ui_state.push_timeline_output(OutputKind::PythonStderr, &result.stderr);
                 }
             }
             Ok(UserRunResult::Failed {
@@ -432,31 +464,28 @@ async fn submit_current_line(
                 exception,
             }) => {
                 if !stdout.is_empty() {
-                    ui_state.push_output(OutputKind::PythonStdout, &stdout);
+                    ui_state.push_timeline_output(OutputKind::PythonStdout, &stdout);
                 }
                 if !stderr.is_empty() {
-                    ui_state.push_output(OutputKind::PythonStderr, &stderr);
+                    ui_state.push_timeline_output(OutputKind::PythonStderr, &stderr);
                 }
-                ui_state.push_output(OutputKind::PythonTraceback, &exception.traceback);
+                ui_state.push_timeline_output(OutputKind::PythonTraceback, &exception.traceback);
             }
             Err(err) => {
-                ui_state.push_output(OutputKind::SystemError, &format!("error: {err}"));
+                ui_state.push_timeline_output(OutputKind::SystemError, &format!("error: {err}"));
             }
         },
         Mode::Assistant => {
             let Some(provider) = &state.llm else {
-                ui_state.push_output(
+                ui_state.push_timeline_output(
                     OutputKind::SystemError,
                     "Assistant unavailable: missing GEMINI_API_KEY. Configure it in your shell or .env file (example: GEMINI_API_KEY=your_key).",
                 );
                 return Ok(());
             };
 
-            let waiting_index =
-                ui_state.push_output_line(OutputKind::AssistantWaiting, "waiting...");
+            let turn_index = ui_state.push_assistant_turn(line.clone());
             terminal.draw(|frame| draw_ui(frame, ui_state))?;
-
-            let mut progress_started = false;
 
             let mut on_event = |event: AgentProgressEvent| {
                 match event {
@@ -470,23 +499,12 @@ async fn submit_current_line(
                         name,
                         args_json,
                     } => {
-                        let text = format!(
-                            "model requested tool {}{} {}",
-                            name,
-                            id.as_deref()
-                                .map(|value| format!(" ({value})"))
-                                .unwrap_or_default(),
-                            compact_json(&args_json),
-                        );
-                        if progress_started {
-                            ui_state.push_output_line(OutputKind::AssistantProgress, text);
-                        } else {
-                            ui_state.replace_output_at(
-                                waiting_index,
-                                OutputKind::AssistantProgress,
-                                &text,
-                            );
-                            progress_started = true;
+                        if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                            turn.events.push(AssistantStepEvent::ToolRequest {
+                                id,
+                                name,
+                                args_json,
+                            });
                         }
                     }
                     AgentProgressEvent::ToolResult {
@@ -495,23 +513,12 @@ async fn submit_current_line(
                         name,
                         response_json,
                     } => {
-                        let text = format!(
-                            "tool result {}{} {}",
-                            name,
-                            id.as_deref()
-                                .map(|value| format!(" ({value})"))
-                                .unwrap_or_default(),
-                            compact_json(&response_json),
-                        );
-                        if progress_started {
-                            ui_state.push_output_line(OutputKind::AssistantProgress, text);
-                        } else {
-                            ui_state.replace_output_at(
-                                waiting_index,
-                                OutputKind::AssistantProgress,
-                                &text,
-                            );
-                            progress_started = true;
+                        if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                            turn.events.push(AssistantStepEvent::ToolResult {
+                                id,
+                                name,
+                                response_json,
+                            });
                         }
                     }
                 }
@@ -528,26 +535,14 @@ async fn submit_current_line(
             .await
             {
                 Ok(answer) => {
-                    if progress_started {
-                        ui_state.push_output(OutputKind::AssistantText, &answer.text);
-                    } else {
-                        ui_state.replace_output_at(
-                            waiting_index,
-                            OutputKind::AssistantText,
-                            &answer.text,
-                        );
+                    if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                        turn.state = AssistantTurnState::CompletedText(answer.text);
                     }
                 }
                 Err(err) => {
                     let message = format!("Assistant request failed: {err}");
-                    if progress_started {
-                        ui_state.push_output(OutputKind::SystemError, &message);
-                    } else {
-                        ui_state.replace_output_at(
-                            waiting_index,
-                            OutputKind::SystemError,
-                            &message,
-                        );
+                    if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                        turn.state = AssistantTurnState::CompletedError(message);
                     }
                 }
             };
@@ -574,35 +569,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         ])
         .split(frame.area());
 
-    let mut lines = Vec::with_capacity(ui_state.scrollback.len().max(1));
-    if ui_state.scrollback.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Welcome to PyAIChat. TAB toggles Python/AI mode.",
-            ui_state.theme.output_style(OutputKind::SystemInfo),
-        )));
-    } else {
-        for entry in &ui_state.scrollback {
-            let line = match entry.kind {
-                OutputKind::UserInputPython => Line::from(vec![
-                    Span::styled("py> ", ui_state.theme.prompt_style(Mode::Python)),
-                    Span::styled(entry.text.clone(), ui_state.theme.output_style(entry.kind)),
-                ]),
-                OutputKind::UserInputAssistant => Line::from(vec![
-                    Span::styled("ai> ", ui_state.theme.prompt_style(Mode::Assistant)),
-                    Span::styled(entry.text.clone(), ui_state.theme.output_style(entry.kind)),
-                ]),
-                _ => Line::from(Span::styled(
-                    entry.text.clone(),
-                    ui_state.theme.output_style(entry.kind),
-                )),
-            };
-            lines.push(line);
-            if entry.kind == OutputKind::AssistantProgress && entry.text.starts_with("tool result ")
-            {
-                lines.push(Line::from(""));
-            }
-        }
-    }
+    let lines = render_timeline_lines(ui_state);
 
     let visible_lines = usize::from(chunks[0].height);
     let scroll = lines.len().saturating_sub(visible_lines);
@@ -643,10 +610,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .scroll((input_scroll, 0));
     frame.render_widget(input_widget, chunks[1]);
 
-    let mode_text = match ui_state.mode {
-        Mode::Python => "Mode: Python",
-        Mode::Assistant => "Mode: AI Assistant",
-    };
+    let mode_text = mode_status_text(ui_state.mode, ui_state.show_assistant_steps);
     let status_left = Paragraph::new(mode_text).style(ui_state.theme.status_style());
     frame.render_widget(status_left, chunks[2]);
 
@@ -667,6 +631,135 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .saturating_add(1)
         .saturating_add(u16::try_from(cursor_row).unwrap_or(u16::MAX));
     frame.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
+    if ui_state.timeline.is_empty() {
+        return vec![Line::from(Span::styled(
+            "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles assistant steps.",
+            ui_state.theme.output_style(OutputKind::SystemInfo),
+        ))];
+    }
+
+    let mut lines = Vec::new();
+    for entry in &ui_state.timeline {
+        match entry {
+            TimelineEntry::UserInputPython(text) => lines.push(Line::from(vec![
+                Span::styled("py> ", ui_state.theme.prompt_style(Mode::Python)),
+                Span::styled(
+                    text.clone(),
+                    ui_state.theme.output_style(OutputKind::UserInputPython),
+                ),
+            ])),
+            TimelineEntry::UserInputAssistant(text) => lines.push(Line::from(vec![
+                Span::styled("ai> ", ui_state.theme.prompt_style(Mode::Assistant)),
+                Span::styled(
+                    text.clone(),
+                    ui_state.theme.output_style(OutputKind::UserInputAssistant),
+                ),
+            ])),
+            TimelineEntry::OutputLine { kind, text } => lines.push(Line::from(Span::styled(
+                text.clone(),
+                ui_state.theme.output_style(*kind),
+            ))),
+            TimelineEntry::AssistantTurn(turn) => lines.extend(render_assistant_turn_lines(
+                &ui_state.theme,
+                turn,
+                ui_state.show_assistant_steps,
+            )),
+        }
+    }
+
+    lines
+}
+
+fn render_assistant_turn_lines(
+    theme: &Theme,
+    turn: &AssistantTurn,
+    show_assistant_steps: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled("ai> ", theme.prompt_style(Mode::Assistant)),
+        Span::styled(
+            turn.prompt.clone(),
+            theme.output_style(OutputKind::UserInputAssistant),
+        ),
+    ]));
+
+    if matches!(turn.state, AssistantTurnState::InFlight) {
+        lines.push(Line::from(Span::styled(
+            "waiting...",
+            theme.output_style(OutputKind::AssistantWaiting),
+        )));
+    }
+
+    if show_assistant_steps {
+        for event in &turn.events {
+            match event {
+                AssistantStepEvent::ToolRequest {
+                    id,
+                    name,
+                    args_json,
+                } => {
+                    let text = format!(
+                        "model requested tool {}{} {}",
+                        name,
+                        id.as_deref()
+                            .map(|value| format!(" ({value})"))
+                            .unwrap_or_default(),
+                        compact_json(args_json),
+                    );
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        theme.output_style(OutputKind::AssistantProgress),
+                    )));
+                }
+                AssistantStepEvent::ToolResult {
+                    id,
+                    name,
+                    response_json,
+                } => {
+                    let text = format!(
+                        "tool result {}{} {}",
+                        name,
+                        id.as_deref()
+                            .map(|value| format!(" ({value})"))
+                            .unwrap_or_default(),
+                        compact_json(response_json),
+                    );
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        theme.output_style(OutputKind::AssistantProgress),
+                    )));
+                    lines.push(Line::from(""));
+                }
+            }
+        }
+    }
+
+    match &turn.state {
+        AssistantTurnState::InFlight => {}
+        AssistantTurnState::CompletedText(text) => {
+            for line in split_output_lines(text) {
+                lines.push(Line::from(Span::styled(
+                    line.to_string(),
+                    theme.output_style(OutputKind::AssistantText),
+                )));
+            }
+        }
+        AssistantTurnState::CompletedError(message) => {
+            for line in split_output_lines(message) {
+                lines.push(Line::from(Span::styled(
+                    line.to_string(),
+                    theme.output_style(OutputKind::SystemError),
+                )));
+            }
+        }
+    }
+
+    lines
 }
 
 fn split_output_lines(text: &str) -> Vec<&str> {
@@ -765,13 +858,47 @@ fn toggle_mode(mode: Mode) -> Mode {
     }
 }
 
+fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
+    let mode_text = match mode {
+        Mode::Python => "Mode: Python",
+        Mode::Assistant => "Mode: AI Assistant",
+    };
+    let steps_text = if show_assistant_steps { "On" } else { "Off" };
+    format!("{mode_text} | Steps: {steps_text} (Ctrl-T)")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Mode, append_newline_with_indent, compact_json, input_cursor_position, last_line_indent,
-        prompt_for, resolve_color_enabled_with, split_output_lines, toggle_mode,
+        AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode, Theme,
+        append_newline_with_indent, compact_json, input_cursor_position, last_line_indent,
+        mode_status_text, prompt_for, render_assistant_turn_lines, resolve_color_enabled_with,
+        split_output_lines, toggle_mode,
     };
     use serde_json::json;
+
+    fn completed_turn_fixture() -> AssistantTurn {
+        AssistantTurn {
+            prompt: "inspect x".to_string(),
+            events: vec![
+                AssistantStepEvent::ToolRequest {
+                    id: Some("call_1".to_string()),
+                    name: "get_type".to_string(),
+                    args_json: json!({"expr":"x"}),
+                },
+                AssistantStepEvent::ToolResult {
+                    id: Some("call_1".to_string()),
+                    name: "get_type".to_string(),
+                    response_json: json!({"ok":true,"type":"int"}),
+                },
+            ],
+            state: AssistantTurnState::CompletedText("x is an int".to_string()),
+        }
+    }
+
+    fn text_lines(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
+        lines.into_iter().map(|line| line.to_string()).collect()
+    }
 
     #[test]
     fn test_toggle_mode() {
@@ -842,5 +969,124 @@ mod tests {
         assert_eq!(input_cursor_position(""), (0, 0));
         assert_eq!(input_cursor_position("abc"), (0, 3));
         assert_eq!(input_cursor_position("a\nbc"), (1, 2));
+    }
+
+    #[test]
+    fn mode_status_text_includes_step_toggle_value() {
+        assert_eq!(
+            mode_status_text(Mode::Python, true),
+            "Mode: Python | Steps: On (Ctrl-T)"
+        );
+        assert_eq!(
+            mode_status_text(Mode::Assistant, false),
+            "Mode: AI Assistant | Steps: Off (Ctrl-T)"
+        );
+    }
+
+    #[test]
+    fn render_assistant_turn_hides_steps_when_toggle_off() {
+        let turn = completed_turn_fixture();
+        let lines = text_lines(render_assistant_turn_lines(
+            &Theme::new(false),
+            &turn,
+            false,
+        ));
+        assert!(lines.iter().any(|line| line == "ai> inspect x"));
+        assert!(lines.iter().any(|line| line == "x is an int"));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("model requested tool"))
+        );
+        assert!(!lines.iter().any(|line| line.starts_with("tool result")));
+    }
+
+    #[test]
+    fn render_assistant_turn_shows_steps_when_toggle_on() {
+        let turn = completed_turn_fixture();
+        let lines = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("model requested tool"))
+        );
+        assert!(lines.iter().any(|line| line.starts_with("tool result")));
+        assert!(lines.iter().any(|line| line == "x is an int"));
+    }
+
+    #[test]
+    fn toggle_is_retroactive_for_completed_turn() {
+        let turn = completed_turn_fixture();
+        let with_steps = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
+        let without_steps = text_lines(render_assistant_turn_lines(
+            &Theme::new(false),
+            &turn,
+            false,
+        ));
+        assert_ne!(with_steps, without_steps);
+        assert!(
+            with_steps
+                .iter()
+                .any(|line| line.starts_with("tool result"))
+        );
+        assert!(
+            !without_steps
+                .iter()
+                .any(|line| line.starts_with("tool result"))
+        );
+    }
+
+    #[test]
+    fn inflight_turn_shows_waiting_and_optional_steps() {
+        let turn = AssistantTurn {
+            prompt: "inspect y".to_string(),
+            events: vec![AssistantStepEvent::ToolRequest {
+                id: None,
+                name: "get_repr".to_string(),
+                args_json: json!({"expr":"y"}),
+            }],
+            state: AssistantTurnState::InFlight,
+        };
+
+        let hidden = text_lines(render_assistant_turn_lines(
+            &Theme::new(false),
+            &turn,
+            false,
+        ));
+        assert!(hidden.iter().any(|line| line == "waiting..."));
+        assert!(
+            !hidden
+                .iter()
+                .any(|line| line.starts_with("model requested tool"))
+        );
+
+        let shown = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
+        assert!(shown.iter().any(|line| line == "waiting..."));
+        assert!(
+            shown
+                .iter()
+                .any(|line| line.starts_with("model requested tool"))
+        );
+    }
+
+    #[test]
+    fn assistant_error_replaces_waiting_semantics() {
+        let turn = AssistantTurn {
+            prompt: "inspect z".to_string(),
+            events: Vec::new(),
+            state: AssistantTurnState::CompletedError("Assistant request failed: boom".to_string()),
+        };
+
+        let lines = text_lines(render_assistant_turn_lines(
+            &Theme::new(false),
+            &turn,
+            false,
+        ));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Assistant request failed: boom")
+        );
+        assert!(!lines.iter().any(|line| line == "waiting..."));
     }
 }
