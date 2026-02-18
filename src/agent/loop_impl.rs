@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use serde_json::Value;
 use tokio::time::timeout;
 
 use crate::agent::dispatch::{FunctionCallSpec, dispatch_calls, tool_declarations};
@@ -36,11 +37,41 @@ pub struct AgentAnswer {
     pub degraded: bool,
 }
 
-pub async fn run_question<P: LlmProvider, C: CapabilityProvider>(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentProgressEvent {
+    StepStarted {
+        step: usize,
+    },
+    ModelResponse {
+        step: usize,
+        thought_signatures: usize,
+        tool_calls: usize,
+        has_text: bool,
+    },
+    ToolRequest {
+        step: usize,
+        id: Option<String>,
+        name: String,
+        args_json: Value,
+    },
+    ToolResult {
+        step: usize,
+        id: Option<String>,
+        name: String,
+        response_json: Value,
+    },
+}
+
+pub async fn run_question_with_events<
+    P: LlmProvider,
+    C: CapabilityProvider,
+    F: FnMut(AgentProgressEvent),
+>(
     provider: &P,
     capabilities: &C,
     question: &str,
     config: &AgentConfig,
+    on_event: &mut F,
 ) -> Result<AgentAnswer> {
     let mut messages = vec![AssistantMessage {
         role: AssistantRole::User,
@@ -53,7 +84,9 @@ pub async fn run_question<P: LlmProvider, C: CapabilityProvider>(
     let total_deadline = Instant::now() + Duration::from_millis(config.total_timeout_ms);
     let mut invalid_response_attempts = 0usize;
 
-    for _ in 0..config.max_steps {
+    for step in 1..=config.max_steps {
+        on_event(AgentProgressEvent::StepStarted { step });
+
         let now = Instant::now();
         if now >= total_deadline {
             return Ok(degraded(
@@ -101,11 +134,18 @@ pub async fn run_question<P: LlmProvider, C: CapabilityProvider>(
             continue;
         };
 
+        let calls = extract_function_calls(&candidate.message.parts);
+        let text = extract_text(&candidate.message.parts);
+        on_event(AgentProgressEvent::ModelResponse {
+            step,
+            thought_signatures: count_thought_signatures(&candidate.message.parts),
+            tool_calls: calls.len(),
+            has_text: !text.is_empty(),
+        });
+
         messages.push(candidate.message.clone());
 
-        let calls = extract_function_calls(&candidate.message.parts);
         if calls.is_empty() {
-            let text = extract_text(&candidate.message.parts);
             if !text.is_empty() {
                 return Ok(AgentAnswer {
                     text,
@@ -123,7 +163,32 @@ pub async fn run_question<P: LlmProvider, C: CapabilityProvider>(
             continue;
         }
 
+        for call in &calls {
+            on_event(AgentProgressEvent::ToolRequest {
+                step,
+                id: call.id.clone(),
+                name: call.name.clone(),
+                args_json: call.args_json.clone(),
+            });
+        }
+
         let responses = dispatch_calls(capabilities, &calls);
+        for response in &responses {
+            if let AssistantPart::FunctionResponse {
+                id,
+                name,
+                response_json,
+                ..
+            } = response
+            {
+                on_event(AgentProgressEvent::ToolResult {
+                    step,
+                    id: id.clone(),
+                    name: name.clone(),
+                    response_json: response_json.clone(),
+                });
+            }
+        }
         messages.push(AssistantMessage {
             role: AssistantRole::User,
             parts: responses,
@@ -215,6 +280,23 @@ fn has_non_empty_text(parts: &[AssistantPart]) -> bool {
     !extract_text(parts).is_empty()
 }
 
+fn count_thought_signatures(parts: &[AssistantPart]) -> usize {
+    parts
+        .iter()
+        .filter(|part| match part {
+            AssistantPart::Text {
+                thought_signature, ..
+            }
+            | AssistantPart::FunctionCall {
+                thought_signature, ..
+            }
+            | AssistantPart::FunctionResponse {
+                thought_signature, ..
+            } => thought_signature.is_some(),
+        })
+        .count()
+}
+
 async fn finalize_without_tools<P: LlmProvider>(
     provider: &P,
     messages: &[AssistantMessage],
@@ -284,7 +366,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::agent::{AgentConfig, run_question};
+    use crate::agent::{AgentConfig, run_question_with_events};
     use crate::llm::provider::{
         AssistantCandidate, AssistantInput, AssistantMessage, AssistantOutput, AssistantPart,
         AssistantRole, LlmError, LlmProvider,
@@ -350,11 +432,12 @@ mod tests {
         ]);
 
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(
+        let answer = run_question_with_events(
             &provider,
             &session,
             "what globals?",
             &AgentConfig::default(),
+            &mut |_| {},
         )
         .await
         .expect("answer");
@@ -393,11 +476,12 @@ mod tests {
         })]);
 
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(
+        let answer = run_question_with_events(
             &provider,
             &session,
             "say something",
             &AgentConfig::default(),
+            &mut |_| {},
         )
         .await
         .expect("answer");
@@ -438,9 +522,15 @@ mod tests {
         ]);
 
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(&provider, &session, "retry flow", &AgentConfig::default())
-            .await
-            .expect("answer");
+        let answer = run_question_with_events(
+            &provider,
+            &session,
+            "retry flow",
+            &AgentConfig::default(),
+            &mut |_| {},
+        )
+        .await
+        .expect("answer");
 
         assert_eq!(answer.text, "recovered");
         assert!(!answer.degraded);
@@ -488,9 +578,15 @@ mod tests {
         ]);
 
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(&provider, &session, "run multiple", &AgentConfig::default())
-            .await
-            .expect("answer");
+        let answer = run_question_with_events(
+            &provider,
+            &session,
+            "run multiple",
+            &AgentConfig::default(),
+            &mut |_| {},
+        )
+        .await
+        .expect("answer");
 
         assert_eq!(answer.text, "multi ok");
         assert!(!answer.degraded);
@@ -522,9 +618,15 @@ mod tests {
         ]);
 
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(&provider, &session, "retry fail", &AgentConfig::default())
-            .await
-            .expect("answer");
+        let answer = run_question_with_events(
+            &provider,
+            &session,
+            "retry fail",
+            &AgentConfig::default(),
+            &mut |_| {},
+        )
+        .await
+        .expect("answer");
 
         assert!(answer.degraded);
         assert!(answer.text.contains("invalid response repeatedly"));
@@ -583,9 +685,10 @@ mod tests {
             ..AgentConfig::default()
         };
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(&provider, &session, "change f", &config)
-            .await
-            .expect("answer");
+        let answer =
+            run_question_with_events(&provider, &session, "change f", &config, &mut |_| {})
+                .await
+                .expect("answer");
 
         assert_eq!(answer.text, "Redefine it: def f():\\n    return 43");
         assert!(answer.degraded);
@@ -606,9 +709,10 @@ mod tests {
             invalid_response_retries: 1,
         };
         let session = PythonSession::initialize().expect("python");
-        let answer = run_question(&provider, &session, "change f", &config)
-            .await
-            .expect("answer");
+        let answer =
+            run_question_with_events(&provider, &session, "change f", &config, &mut |_| {})
+                .await
+                .expect("answer");
 
         assert!(answer.degraded);
         assert!(answer.text.contains("step limit"));

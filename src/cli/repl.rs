@@ -1,4 +1,4 @@
-use crate::agent::{AgentConfig, run_question};
+use crate::agent::{AgentConfig, AgentProgressEvent, run_question_with_events};
 use crate::llm::gemini::GeminiProvider;
 use crate::python::{InputCompleteness, PythonSession, UserRunResult};
 use anyhow::Result;
@@ -39,6 +39,7 @@ enum OutputKind {
     PythonTraceback,
     AssistantText,
     AssistantWaiting,
+    AssistantProgress,
     SystemInfo,
     SystemError,
 }
@@ -212,6 +213,7 @@ impl Theme {
             OutputKind::AssistantWaiting => Style::default()
                 .fg(Color::Rgb(86, 95, 137))
                 .add_modifier(Modifier::ITALIC),
+            OutputKind::AssistantProgress => Style::default().fg(Color::Rgb(147, 153, 178)),
             OutputKind::SystemInfo => Style::default().fg(Color::Rgb(86, 95, 137)),
             OutputKind::SystemError => Style::default()
                 .fg(Color::Rgb(247, 118, 142))
@@ -458,17 +460,123 @@ async fn submit_current_line(
                 ui_state.push_output_line(OutputKind::AssistantWaiting, "waiting...");
             terminal.draw(|frame| draw_ui(frame, ui_state))?;
 
-            match run_question(provider, &state.python, &line, &state.agent_config).await {
-                Ok(answer) => ui_state.replace_output_at(
-                    waiting_index,
-                    OutputKind::AssistantText,
-                    &answer.text,
-                ),
-                Err(err) => ui_state.replace_output_at(
-                    waiting_index,
-                    OutputKind::SystemError,
-                    &format!("Assistant request failed: {err}"),
-                ),
+            let mut progress_started = false;
+
+            let mut on_event = |event: AgentProgressEvent| {
+                match event {
+                    AgentProgressEvent::StepStarted { .. } => {}
+                    AgentProgressEvent::ModelResponse {
+                        step,
+                        thought_signatures,
+                        tool_calls,
+                        has_text,
+                    } => {
+                        let text = format!(
+                            "step {step}: model response (thinking parts: {thought_signatures}, tool calls: {tool_calls}, text: {})",
+                            if has_text { "yes" } else { "no" }
+                        );
+                        if progress_started {
+                            ui_state.push_output_line(OutputKind::AssistantProgress, text);
+                        } else {
+                            ui_state.replace_output_at(
+                                waiting_index,
+                                OutputKind::AssistantProgress,
+                                &text,
+                            );
+                            progress_started = true;
+                        }
+                    }
+                    AgentProgressEvent::ToolRequest {
+                        step,
+                        id,
+                        name,
+                        args_json,
+                    } => {
+                        let text = format!(
+                            "step {step}: tool request {}{} args={}",
+                            name,
+                            id.as_deref()
+                                .map(|value| format!(" ({value})"))
+                                .unwrap_or_default(),
+                            compact_json(&args_json),
+                        );
+                        if progress_started {
+                            ui_state.push_output_line(OutputKind::AssistantProgress, text);
+                        } else {
+                            ui_state.replace_output_at(
+                                waiting_index,
+                                OutputKind::AssistantProgress,
+                                &text,
+                            );
+                            progress_started = true;
+                        }
+                    }
+                    AgentProgressEvent::ToolResult {
+                        step,
+                        id,
+                        name,
+                        response_json,
+                    } => {
+                        let ok = response_json
+                            .get("ok")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let text = format!(
+                            "step {step}: tool result {}{} => {} {}",
+                            name,
+                            id.as_deref()
+                                .map(|value| format!(" ({value})"))
+                                .unwrap_or_default(),
+                            if ok { "ok" } else { "error" },
+                            compact_json(&response_json),
+                        );
+                        if progress_started {
+                            ui_state.push_output_line(OutputKind::AssistantProgress, text);
+                        } else {
+                            ui_state.replace_output_at(
+                                waiting_index,
+                                OutputKind::AssistantProgress,
+                                &text,
+                            );
+                            progress_started = true;
+                        }
+                    }
+                }
+                let _ = terminal.draw(|frame| draw_ui(frame, ui_state));
+            };
+
+            match run_question_with_events(
+                provider,
+                &state.python,
+                &line,
+                &state.agent_config,
+                &mut on_event,
+            )
+            .await
+            {
+                Ok(answer) => {
+                    if progress_started {
+                        ui_state.push_output(OutputKind::AssistantText, &answer.text);
+                    } else {
+                        ui_state.replace_output_at(
+                            waiting_index,
+                            OutputKind::AssistantText,
+                            &answer.text,
+                        );
+                    }
+                }
+                Err(err) => {
+                    let message = format!("Assistant request failed: {err}");
+                    if progress_started {
+                        ui_state.push_output(OutputKind::SystemError, &message);
+                    } else {
+                        ui_state.replace_output_at(
+                            waiting_index,
+                            OutputKind::SystemError,
+                            &message,
+                        );
+                    }
+                }
             };
         }
     }
@@ -581,6 +689,17 @@ fn split_output_lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
+fn compact_json(value: &serde_json::Value) -> String {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "<invalid json>".to_string());
+    let mut chars = serialized.chars();
+    let preview: String = chars.by_ref().take(120).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
 fn last_line_indent(input: &str) -> String {
     input
         .rsplit('\n')
@@ -661,9 +780,10 @@ fn toggle_mode(mode: Mode) -> Mode {
 #[cfg(test)]
 mod tests {
     use super::{
-        Mode, append_newline_with_indent, input_cursor_position, last_line_indent, prompt_for,
-        resolve_color_enabled_with, split_output_lines, toggle_mode,
+        Mode, append_newline_with_indent, compact_json, input_cursor_position, last_line_indent,
+        prompt_for, resolve_color_enabled_with, split_output_lines, toggle_mode,
     };
+    use serde_json::json;
 
     #[test]
     fn test_toggle_mode() {
@@ -705,6 +825,14 @@ mod tests {
     fn split_lines_works() {
         assert_eq!(split_output_lines("a\nb\n"), vec!["a", "b"]);
         assert!(split_output_lines("").is_empty());
+    }
+
+    #[test]
+    fn compact_json_truncates_long_values() {
+        let long = json!({"x":"a".repeat(200)});
+        let text = compact_json(&long);
+        assert!(text.ends_with("..."));
+        assert!(text.len() <= 123);
     }
 
     #[test]
