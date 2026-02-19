@@ -47,7 +47,6 @@ enum OutputKind {
 #[derive(Debug, Clone)]
 enum TimelineEntry {
     UserInputPython(String),
-    UserInputAssistant(String),
     OutputLine { kind: OutputKind, text: String },
     AssistantTurn(AssistantTurn),
 }
@@ -71,12 +70,12 @@ enum AssistantStepEvent {
     ToolRequest {
         id: Option<String>,
         name: String,
-        args_json: serde_json::Value,
+        args_preview: String,
     },
     ToolResult {
         id: Option<String>,
         name: String,
-        response_json: serde_json::Value,
+        response_preview: String,
     },
 }
 
@@ -131,13 +130,10 @@ impl UiState {
         }
     }
 
-    fn push_user_input(&mut self, mode: Mode, text: &str) {
+    fn push_user_input(&mut self, text: &str) {
         for line in split_output_lines(text) {
-            let entry = match mode {
-                Mode::Python => TimelineEntry::UserInputPython(line.to_string()),
-                Mode::Assistant => TimelineEntry::UserInputAssistant(line.to_string()),
-            };
-            self.timeline.push(entry);
+            self.timeline
+                .push(TimelineEntry::UserInputPython(line.to_string()));
         }
     }
 
@@ -436,7 +432,9 @@ async fn submit_current_line(
         return Ok(());
     }
 
-    ui_state.push_user_input(ui_state.mode, &line);
+    if ui_state.mode == Mode::Python {
+        ui_state.push_user_input(&line);
+    }
     ui_state.push_history(&line);
 
     match ui_state.mode {
@@ -500,10 +498,11 @@ async fn submit_current_line(
                         args_json,
                     } => {
                         if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                            let args_preview = compact_json(&args_json);
                             turn.events.push(AssistantStepEvent::ToolRequest {
                                 id,
                                 name,
-                                args_json,
+                                args_preview,
                             });
                         }
                     }
@@ -514,10 +513,11 @@ async fn submit_current_line(
                         response_json,
                     } => {
                         if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                            let response_preview = compact_json(&response_json);
                             turn.events.push(AssistantStepEvent::ToolResult {
                                 id,
                                 name,
-                                response_json,
+                                response_preview,
                             });
                         }
                     }
@@ -651,13 +651,6 @@ fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
                     ui_state.theme.output_style(OutputKind::UserInputPython),
                 ),
             ])),
-            TimelineEntry::UserInputAssistant(text) => lines.push(Line::from(vec![
-                Span::styled("ai> ", ui_state.theme.prompt_style(Mode::Assistant)),
-                Span::styled(
-                    text.clone(),
-                    ui_state.theme.output_style(OutputKind::UserInputAssistant),
-                ),
-            ])),
             TimelineEntry::OutputLine { kind, text } => lines.push(Line::from(Span::styled(
                 text.clone(),
                 ui_state.theme.output_style(*kind),
@@ -701,7 +694,7 @@ fn render_assistant_turn_lines(
                 AssistantStepEvent::ToolRequest {
                     id,
                     name,
-                    args_json,
+                    args_preview,
                 } => {
                     let text = format!(
                         "model requested tool {}{} {}",
@@ -709,7 +702,7 @@ fn render_assistant_turn_lines(
                         id.as_deref()
                             .map(|value| format!(" ({value})"))
                             .unwrap_or_default(),
-                        compact_json(args_json),
+                        args_preview,
                     );
                     lines.push(Line::from(Span::styled(
                         text,
@@ -719,7 +712,7 @@ fn render_assistant_turn_lines(
                 AssistantStepEvent::ToolResult {
                     id,
                     name,
-                    response_json,
+                    response_preview,
                 } => {
                     let text = format!(
                         "tool result {}{} {}",
@@ -727,7 +720,7 @@ fn render_assistant_turn_lines(
                         id.as_deref()
                             .map(|value| format!(" ({value})"))
                             .unwrap_or_default(),
-                        compact_json(response_json),
+                        response_preview,
                     );
                     lines.push(Line::from(Span::styled(
                         text,
@@ -884,12 +877,12 @@ mod tests {
                 AssistantStepEvent::ToolRequest {
                     id: Some("call_1".to_string()),
                     name: "get_type".to_string(),
-                    args_json: json!({"expr":"x"}),
+                    args_preview: compact_json(&json!({"expr":"x"})),
                 },
                 AssistantStepEvent::ToolResult {
                     id: Some("call_1".to_string()),
                     name: "get_type".to_string(),
-                    response_json: json!({"ok":true,"type":"int"}),
+                    response_preview: compact_json(&json!({"ok":true,"type":"int"})),
                 },
             ],
             state: AssistantTurnState::CompletedText("x is an int".to_string()),
@@ -1043,7 +1036,7 @@ mod tests {
             events: vec![AssistantStepEvent::ToolRequest {
                 id: None,
                 name: "get_repr".to_string(),
-                args_json: json!({"expr":"y"}),
+                args_preview: compact_json(&json!({"expr":"y"})),
             }],
             state: AssistantTurnState::InFlight,
         };
