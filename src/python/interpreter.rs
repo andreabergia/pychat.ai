@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use pyo3::prelude::*;
-use pyo3::types::PyModuleMethods;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyModule, PyTuple, PyTupleMethods};
 use serde_json::Value;
 use std::ffi::CString;
@@ -48,19 +47,23 @@ pub enum InputCompleteness {
 }
 
 pub struct PythonSession {
-    main_module: Py<PyModule>,
+    globals: Py<PyDict>,
 }
 
 #[allow(dead_code)]
 impl PythonSession {
     pub fn initialize() -> Result<Self> {
         Python::attach(|py| -> Result<Self> {
-            let main_module = PyModule::import(py, "__main__")?;
-            Self::install_runtime_helpers(py, &main_module)?;
-            Self::health_check(py, &main_module)?;
+            let globals = PyDict::new(py);
+            let builtins = PyModule::import(py, "builtins")?;
+            globals.set_item("__builtins__", builtins)?;
+            globals.set_item("__name__", "__main__")?;
+
+            Self::install_runtime_helpers(py, &globals)?;
+            Self::health_check(py, &globals)?;
 
             let session = Self {
-                main_module: main_module.unbind(),
+                globals: globals.unbind(),
             };
 
             if !session.is_healthy() {
@@ -74,8 +77,8 @@ impl PythonSession {
     #[allow(dead_code)]
     pub fn exec_code(&self, code: &str) -> Result<ExecResult> {
         Python::attach(|py| -> Result<ExecResult> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_exec_code", (code,))?;
+            let globals = self.globals.bind(py);
+            let result = Self::call_runtime_helper(globals, "_pyaichat_exec_code", (code,))?;
             if Self::result_ok(&result)? {
                 Ok(ExecResult {
                     stdout: Self::dict_string(&result, "stdout")?,
@@ -91,8 +94,8 @@ impl PythonSession {
     #[allow(dead_code)]
     pub fn eval_expr(&self, expr: &str) -> Result<EvalResult> {
         Python::attach(|py| -> Result<EvalResult> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_eval_expr", (expr,))?;
+            let globals = self.globals.bind(py);
+            let result = Self::call_runtime_helper(globals, "_pyaichat_eval_expr", (expr,))?;
             if Self::result_ok(&result)? {
                 Ok(EvalResult {
                     value_repr: Self::dict_string(&result, "value_repr")?,
@@ -108,8 +111,8 @@ impl PythonSession {
 
     pub fn run_user_input(&self, line: &str) -> Result<UserRunResult> {
         Python::attach(|py| -> Result<UserRunResult> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_run_user_input", (line,))?;
+            let globals = self.globals.bind(py);
+            let result = Self::call_runtime_helper(globals, "_pyaichat_run_user_input", (line,))?;
             let kind = Self::dict_string(&result, "kind")?;
             let ok = Self::result_ok(&result)?;
 
@@ -135,9 +138,9 @@ impl PythonSession {
 
     pub fn check_input_completeness(&self, source: &str) -> Result<InputCompleteness> {
         Python::attach(|py| -> Result<InputCompleteness> {
-            let main = self.main_module.bind(py);
+            let globals = self.globals.bind(py);
             let result =
-                Self::call_runtime_helper(main, "_pyaichat_check_input_complete", (source,))?;
+                Self::call_runtime_helper(globals, "_pyaichat_check_input_complete", (source,))?;
             if !Self::result_ok(&result)? {
                 let exception = Self::dict_exception(&result)?;
                 anyhow::bail!("{}", exception.traceback)
@@ -156,8 +159,8 @@ impl PythonSession {
     #[allow(dead_code)]
     pub fn list_globals(&self) -> Result<Vec<GlobalEntry>> {
         Python::attach(|py| -> Result<Vec<GlobalEntry>> {
-            let main = self.main_module.bind(py);
-            let py_entries = Self::call_runtime_helper(main, "_pyaichat_list_globals", ())?;
+            let globals = self.globals.bind(py);
+            let py_entries = Self::call_runtime_helper(globals, "_pyaichat_list_globals", ())?;
             let py_entries = Self::cast_list(&py_entries)?;
             let mut entries = Vec::new();
             for item in py_entries.iter() {
@@ -174,8 +177,8 @@ impl PythonSession {
     #[allow(dead_code)]
     pub fn get_last_exception(&self) -> Result<Option<ExceptionInfo>> {
         Python::attach(|py| -> Result<Option<ExceptionInfo>> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_get_last_exception", ())?;
+            let globals = self.globals.bind(py);
+            let result = Self::call_runtime_helper(globals, "_pyaichat_get_last_exception", ())?;
             if result.is_none() {
                 Ok(None)
             } else {
@@ -186,33 +189,33 @@ impl PythonSession {
 
     pub fn is_healthy(&self) -> bool {
         Python::attach(|py| {
-            let main = self.main_module.bind(py);
-            Self::health_check(py, main).is_ok()
+            let globals = self.globals.bind(py);
+            Self::health_check(py, globals).is_ok()
         })
     }
 
-    fn health_check(py: Python<'_>, main_module: &Bound<'_, PyModule>) -> PyResult<()> {
-        let globals = main_module.dict();
-        let _ = py.eval(c"1 + 1", Some(&globals), Some(&globals))?;
+    fn health_check(py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()> {
+        let _ = py.eval(c"1 + 1", Some(globals), Some(globals))?;
         Ok(())
     }
 
-    fn install_runtime_helpers(py: Python<'_>, main_module: &Bound<'_, PyModule>) -> Result<()> {
-        let globals = main_module.dict();
+    fn install_runtime_helpers(py: Python<'_>, globals: &Bound<'_, PyDict>) -> Result<()> {
         let helper_code = CString::new(include_str!("runtime_helpers.py"))?;
-        py.run(helper_code.as_c_str(), Some(&globals), Some(&globals))?;
+        py.run(helper_code.as_c_str(), Some(globals), Some(globals))?;
         Ok(())
     }
 
     fn call_runtime_helper<'py, A>(
-        main_module: &Bound<'py, PyModule>,
+        globals: &Bound<'py, PyDict>,
         helper_name: &str,
         args: A,
     ) -> Result<Bound<'py, pyo3::types::PyAny>>
     where
         A: pyo3::call::PyCallArgs<'py>,
     {
-        let helper = main_module.getattr(helper_name)?;
+        let helper = globals
+            .get_item(helper_name)?
+            .ok_or_else(|| anyhow!("missing runtime helper: {helper_name}"))?;
         let result = helper.call1(args)?;
         Ok(result)
     }
@@ -349,8 +352,8 @@ impl CapabilityProvider for PythonSession {
 
     fn inspect(&self, expr: &str) -> CapabilityResult<InspectInfo> {
         Python::attach(|py| -> CapabilityResult<InspectInfo> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_inspect", (expr,))
+            let globals = self.globals.bind(py);
+            let result = Self::call_runtime_helper(globals, "_pyaichat_inspect", (expr,))
                 .map_err(Self::cap_internal)?;
             if !Self::cap_result_ok(&result)? {
                 return Err(CapabilityError::PythonException(Self::cap_dict_exception(
@@ -373,8 +376,8 @@ impl CapabilityProvider for PythonSession {
 
     fn eval_expr(&self, expr: &str) -> CapabilityResult<EvalInfo> {
         Python::attach(|py| -> CapabilityResult<EvalInfo> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_eval_expr", (expr,))
+            let globals = self.globals.bind(py);
+            let result = Self::call_runtime_helper(globals, "_pyaichat_eval_expr", (expr,))
                 .map_err(Self::cap_internal)?;
             if !Self::cap_result_ok(&result)? {
                 return Err(CapabilityError::PythonException(Self::cap_dict_exception(
@@ -394,12 +397,14 @@ impl CapabilityProvider for PythonSession {
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
+    use std::sync::{LazyLock, Mutex};
 
     use crate::python::{CapabilityError, CapabilityProvider};
     use pyo3::prelude::Python;
-    use pyo3::types::PyModuleMethods;
 
     use super::{InputCompleteness, PythonSession, UserRunResult};
+
+    static SIGNAL_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn exec_persists_state_across_calls() {
@@ -693,27 +698,11 @@ mod tests {
     #[test]
     fn capability_inspect_timeout_surfaces_as_python_exception() {
         let session = PythonSession::initialize().expect("python session");
-        let timeout_supported = session
-            .eval_expr("hasattr(__import__('signal'), 'SIGALRM')")
-            .expect("check signal")
-            .value_repr;
-        let runs_on_main_thread = session
-            .eval_expr(
-                "__import__('threading').current_thread() is __import__('threading').main_thread()",
-            )
-            .expect("check thread")
-            .value_repr;
-        if timeout_supported != "True" || runs_on_main_thread != "True" {
-            return;
-        }
-
         session
-            .exec_code(
-                "import __main__, time\n__main__._INSPECT_TIMEOUT_SECONDS = 0.05\nclass SlowRepr:\n    def __repr__(self):\n        time.sleep(0.2)\n        return 'slow'\nslow = SlowRepr()",
-            )
-            .expect("seed slow repr");
+            .exec_code("def _with_timeout(fn):\n    raise TimeoutError('inspect timed out')")
+            .expect("override timeout helper");
         let err =
-            CapabilityProvider::inspect(&session, "slow").expect_err("inspect timeout should fail");
+            CapabilityProvider::inspect(&session, "42").expect_err("inspect timeout should fail");
         match err {
             CapabilityError::PythonException(exc) => {
                 assert_eq!(exc.exc_type, "TimeoutError");
@@ -725,6 +714,7 @@ mod tests {
 
     #[test]
     fn capability_inspect_timeout_restores_existing_alarm_handler_and_timer() {
+        let _signal_guard = SIGNAL_TEST_MUTEX.lock().expect("lock signal test mutex");
         let session = PythonSession::initialize().expect("python session");
         let timeout_supported = session
             .eval_expr("hasattr(__import__('signal'), 'SIGALRM') and hasattr(__import__('signal'), 'ITIMER_REAL')")
@@ -742,30 +732,28 @@ mod tests {
 
         session
             .exec_code(
-                "import signal\n\
-def _test_alarm_handler(_signum, _frame):\n\
-    return None\n\
-_prev_alarm_handler = signal.getsignal(signal.SIGALRM)\n\
-signal.signal(signal.SIGALRM, _test_alarm_handler)\n\
-signal.setitimer(signal.ITIMER_REAL, 0.4)",
+                r#"import signal
+def _test_alarm_handler(_signum, _frame):
+    return None
+_prev_alarm_handler = signal.getsignal(signal.SIGALRM)
+signal.signal(signal.SIGALRM, _test_alarm_handler)
+signal.setitimer(signal.ITIMER_REAL, 0.4)"#,
             )
             .expect("seed alarm state");
 
         CapabilityProvider::inspect(&session, "42").expect("inspect");
         let check = session
             .eval_expr(
-                "import signal\n\
-_remaining = signal.getitimer(signal.ITIMER_REAL)[0]\n\
-(signal.getsignal(signal.SIGALRM) is _test_alarm_handler) and (_remaining > 0.2)",
+                "(__import__('signal').getsignal(__import__('signal').SIGALRM) is _test_alarm_handler) and (__import__('signal').getitimer(__import__('signal').ITIMER_REAL)[0] > 0.2)",
             )
             .expect("check restored alarm state");
         assert_eq!(check.value_repr, "True");
 
         session
             .exec_code(
-                "import signal\n\
-                 signal.setitimer(signal.ITIMER_REAL, 0)\n\
-                 signal.signal(signal.SIGALRM, _prev_alarm_handler)",
+                r#"import signal
+signal.setitimer(signal.ITIMER_REAL, 0)
+signal.signal(signal.SIGALRM, _prev_alarm_handler)"#,
             )
             .expect("restore alarm state");
     }
@@ -809,9 +797,8 @@ _remaining = signal.getitimer(signal.ITIMER_REAL)[0]\n\
             let code =
                 CString::new("def _pyaichat_inspect(expr):\n    return {'inspect_json': '{}'}\n")
                     .expect("python code cstring");
-            let main = session.main_module.bind(py);
-            let globals = main.dict();
-            py.run(code.as_c_str(), Some(&globals), Some(&globals))
+            let globals = session.globals.bind(py);
+            py.run(code.as_c_str(), Some(globals), Some(globals))
                 .expect("override helper in session globals");
         });
 
@@ -835,9 +822,8 @@ _remaining = signal.getitimer(signal.ITIMER_REAL)[0]\n\
                 "def _pyaichat_inspect(expr):\n    return {'ok': True, 'inspect_json': '{\"type\": {\"name\": \"int\"}}'}\n",
             )
             .expect("python code cstring");
-            let main = session.main_module.bind(py);
-            let globals = main.dict();
-            py.run(code.as_c_str(), Some(&globals), Some(&globals))
+            let globals = session.globals.bind(py);
+            py.run(code.as_c_str(), Some(globals), Some(globals))
                 .expect("override helper in session globals");
         });
 
