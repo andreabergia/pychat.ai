@@ -511,4 +511,25 @@ mod tests {
         assert!(lines.iter().any(|line| line == "  Thinking..."));
         assert!(lines.iter().any(|line| line == "x is an int"));
     }
+
+    #[test]
+    fn multiline_entries_split_and_preserve_order() {
+        let mut timeline = Timeline::new();
+        timeline.push_user_input_python("a = 1\nb = 2");
+        timeline.push_output(OutputKind::PythonStdout, "first\nsecond");
+        let idx = timeline.push_assistant_turn("summarize".to_string());
+        let turn = timeline
+            .assistant_turn_mut(idx)
+            .expect("assistant turn index should exist");
+        turn.state = AssistantTurnState::CompletedText("line one\nline two".to_string());
+
+        let lines = text_lines(timeline.render_lines(&Theme::new(false), false));
+        assert_eq!(lines[0], "py> a = 1");
+        assert_eq!(lines[1], "py> b = 2");
+        assert_eq!(lines[2], "first");
+        assert_eq!(lines[3], "second");
+        assert_eq!(lines[4], "ai> summarize");
+        assert_eq!(lines[5], "line one");
+        assert_eq!(lines[6], "line two");
+    }
 }
