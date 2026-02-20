@@ -1013,6 +1013,7 @@ impl PythonSession {
         let previous_stderr = sys.getattr("stderr")?.unbind();
         sys.setattr("stdout", &stdout_buffer)?;
         sys.setattr("stderr", &stderr_buffer)?;
+        let mut redirect_guard = StdioRedirectGuard::new(sys, previous_stdout, previous_stderr);
 
         let operation_result = operation(py);
         let stdout = stdout_buffer
@@ -1023,9 +1024,7 @@ impl PythonSession {
             .getattr("getvalue")?
             .call0()?
             .extract::<String>()?;
-
-        sys.setattr("stdout", previous_stdout.bind(py))?;
-        sys.setattr("stderr", previous_stderr.bind(py))?;
+        redirect_guard.restore()?;
 
         match operation_result {
             Ok(value_repr) => Ok(CapturedOutput {
@@ -1086,6 +1085,56 @@ struct CapturedOutput {
     exception: Option<ExceptionInfo>,
 }
 
+struct StdioRedirectGuard<'py> {
+    sys: Bound<'py, PyModule>,
+    previous_stdout: Py<PyAny>,
+    previous_stderr: Py<PyAny>,
+    restored: bool,
+}
+
+impl<'py> StdioRedirectGuard<'py> {
+    fn new(
+        sys: Bound<'py, PyModule>,
+        previous_stdout: Py<PyAny>,
+        previous_stderr: Py<PyAny>,
+    ) -> Self {
+        Self {
+            sys,
+            previous_stdout,
+            previous_stderr,
+            restored: false,
+        }
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        let py = self.sys.py();
+        let stdout_restore = self.sys.setattr("stdout", self.previous_stdout.bind(py));
+        let stderr_restore = self.sys.setattr("stderr", self.previous_stderr.bind(py));
+        match (stdout_restore, stderr_restore) {
+            (Ok(_), Ok(_)) => {
+                self.restored = true;
+                Ok(())
+            }
+            (Err(stdout_err), Err(stderr_err)) => anyhow::bail!(
+                "failed to restore sys.stdout ({stdout_err}) and sys.stderr ({stderr_err})"
+            ),
+            (Err(stdout_err), Ok(_)) => anyhow::bail!("failed to restore sys.stdout: {stdout_err}"),
+            (Ok(_), Err(stderr_err)) => anyhow::bail!("failed to restore sys.stderr: {stderr_err}"),
+        }
+    }
+}
+
+impl Drop for StdioRedirectGuard<'_> {
+    fn drop(&mut self) {
+        if self.restored {
+            return;
+        }
+        let py = self.sys.py();
+        let _ = self.sys.setattr("stdout", self.previous_stdout.bind(py));
+        let _ = self.sys.setattr("stderr", self.previous_stderr.bind(py));
+    }
+}
+
 struct InspectTimeoutContext<'py> {
     signal: Bound<'py, PyModule>,
     sigalrm: Bound<'py, PyAny>,
@@ -1096,8 +1145,12 @@ struct InspectTimeoutContext<'py> {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
+
+    use pyo3::types::{PyAnyMethods, PyModule};
+    use pyo3::{PyResult, Python};
 
     use crate::python::{CapabilityError, CapabilityProvider};
 
@@ -1162,6 +1215,27 @@ mod tests {
                 .expect("invalid status"),
             InputCompleteness::Invalid
         );
+    }
+
+    #[test]
+    fn capture_output_restores_std_streams_after_panic() {
+        let session = PythonSession::initialize().expect("python session");
+        Python::attach(|py| {
+            let sys = PyModule::import(py, "sys").expect("sys module");
+            let before_stdout = sys.getattr("stdout").expect("stdout before").unbind();
+            let before_stderr = sys.getattr("stderr").expect("stderr before").unbind();
+
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                let _ = session.capture_output(py, |_py| -> PyResult<Option<String>> {
+                    panic!("forced panic while stdio is redirected");
+                });
+            }));
+
+            let after_stdout = sys.getattr("stdout").expect("stdout after");
+            let after_stderr = sys.getattr("stderr").expect("stderr after");
+            assert!(after_stdout.is(before_stdout.bind(py)));
+            assert!(after_stderr.is(before_stderr.bind(py)));
+        });
     }
 
     #[test]
