@@ -1,9 +1,20 @@
 import codeop
+import collections.abc
 import contextlib
+import inspect as pyinspect
 import io
+import json
+import signal
+import threading
 import traceback
 
 _PYAICHAT_LAST_EXCEPTION = None
+_REPR_MAX_LEN = 4096
+_DOC_MAX_LEN = 4096
+_SAMPLE_MAX_ITEMS = 16
+_MEMBER_MAX_PER_GROUP = 24
+_SOURCE_PREVIEW_MAX_LEN = 1200
+_INSPECT_TIMEOUT_SECONDS = 1.0
 
 
 def _pyaichat_capture_exception(exc):
@@ -14,6 +25,353 @@ def _pyaichat_capture_exception(exc):
         "traceback": traceback.format_exc(),
     }
     return _PYAICHAT_LAST_EXCEPTION
+
+
+def _truncate_text(value, max_chars):
+    original_len = len(value)
+    if original_len <= max_chars:
+        return value, False, original_len
+    return value[:max_chars], True, original_len
+
+
+def _safe_repr(value):
+    try:
+        return repr(value), None
+    except BaseException as exc:
+        return f"<repr failed: {type(exc).__name__}: {exc}>", f"{type(exc).__name__}: {exc}"
+
+
+def _repr_payload(value):
+    text, repr_error = _safe_repr(value)
+    text, truncated, original_len = _truncate_text(text, _REPR_MAX_LEN)
+    payload = {
+        "text": text,
+        "truncated": truncated,
+        "original_len": original_len,
+    }
+    if repr_error is not None:
+        payload["repr_error"] = repr_error
+    return payload
+
+
+def _doc_payload(value):
+    try:
+        doc = getattr(value, "__doc__", None)
+    except BaseException as exc:
+        return {
+            "text": None,
+            "truncated": False,
+            "original_len": 0,
+            "doc_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    if doc is None:
+        return {"text": None, "truncated": False, "original_len": 0}
+
+    if not isinstance(doc, str):
+        try:
+            doc = str(doc)
+        except BaseException as exc:
+            return {
+                "text": None,
+                "truncated": False,
+                "original_len": 0,
+                "doc_error": f"{type(exc).__name__}: {exc}",
+            }
+
+    text, truncated, original_len = _truncate_text(doc, _DOC_MAX_LEN)
+    return {
+        "text": text,
+        "truncated": truncated,
+        "original_len": original_len,
+    }
+
+
+def _kind_of(value):
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float, complex)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return "bytes"
+    if isinstance(value, dict):
+        return "mapping"
+    if isinstance(value, (list, tuple, range)):
+        return "sequence"
+    if isinstance(value, (set, frozenset)):
+        return "set"
+    if pyinspect.isasyncgen(value):
+        return "async_generator"
+    if pyinspect.iscoroutine(value):
+        return "coroutine"
+    if pyinspect.isgenerator(value):
+        return "generator"
+    if isinstance(value, collections.abc.Iterator):
+        return "iterator"
+    if pyinspect.ismodule(value):
+        return "module"
+    if pyinspect.isclass(value):
+        return "class"
+    if isinstance(value, BaseException):
+        return "exception"
+    if callable(value):
+        return "callable"
+    return "object"
+
+
+def _type_payload(value):
+    value_type = type(value)
+    name = value_type.__name__
+    module = getattr(value_type, "__module__", "")
+    qualified_name = getattr(value_type, "__qualname__", name)
+    qualified = qualified_name if not module else f"{module}.{qualified_name}"
+    return {
+        "name": name,
+        "module": module,
+        "qualified": qualified,
+    }
+
+
+def _size_payload(value):
+    payload = {}
+
+    try:
+        payload["len"] = len(value)
+    except BaseException:
+        pass
+
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        try:
+            if isinstance(shape, tuple):
+                payload["shape"] = list(shape)
+            elif isinstance(shape, list):
+                payload["shape"] = shape
+            else:
+                payload["shape"] = [shape]
+        except BaseException:
+            pass
+
+    return payload if payload else None
+
+
+def _sample_items_from_mapping(value):
+    items = []
+    total = 0
+    for key, item in value.items():
+        total += 1
+        if len(items) >= _SAMPLE_MAX_ITEMS:
+            continue
+        key_repr, _ = _safe_repr(key)
+        item_repr, _ = _safe_repr(item)
+        items.append(f"{key_repr}: {item_repr}")
+    return items, total
+
+
+def _sample_items_from_iterable(value):
+    items = []
+    total = 0
+    for item in value:
+        total += 1
+        if len(items) >= _SAMPLE_MAX_ITEMS:
+            continue
+        item_repr, _ = _safe_repr(item)
+        items.append(item_repr)
+    return items, total
+
+
+def _sample_payload(value, kind):
+    if kind in {"generator", "iterator", "coroutine", "async_generator"}:
+        return None
+
+    try:
+        if isinstance(value, dict):
+            items, total = _sample_items_from_mapping(value)
+        elif isinstance(value, (list, tuple, range, set, frozenset)):
+            items, total = _sample_items_from_iterable(value)
+        else:
+            return None
+    except BaseException as exc:
+        return {
+            "items": [],
+            "shown": 0,
+            "total": 0,
+            "truncated": False,
+            "sample_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    return {
+        "items": items,
+        "shown": len(items),
+        "total": total,
+        "truncated": total > len(items),
+    }
+
+
+def _members_payload(value):
+    try:
+        names = sorted(dir(value))
+    except BaseException as exc:
+        return {
+            "data": [],
+            "callables": [],
+            "dunder_count": 0,
+            "shown_per_group": _MEMBER_MAX_PER_GROUP,
+            "truncated": False,
+            "dir_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    dunder_count = 0
+    data = []
+    callables = []
+
+    for name in names:
+        if name.startswith("__") and name.endswith("__"):
+            dunder_count += 1
+            continue
+
+        try:
+            attr = getattr(value, name)
+        except BaseException:
+            if len(data) < _MEMBER_MAX_PER_GROUP:
+                data.append(name)
+            continue
+
+        if callable(attr):
+            if len(callables) < _MEMBER_MAX_PER_GROUP:
+                callables.append(name)
+        else:
+            if len(data) < _MEMBER_MAX_PER_GROUP:
+                data.append(name)
+
+    non_dunder_total = len([n for n in names if not (n.startswith("__") and n.endswith("__"))])
+    truncated = non_dunder_total > (len(data) + len(callables))
+
+    return {
+        "data": data,
+        "callables": callables,
+        "dunder_count": dunder_count,
+        "shown_per_group": _MEMBER_MAX_PER_GROUP,
+        "truncated": truncated,
+    }
+
+
+def _safe_signature(value):
+    try:
+        return str(pyinspect.signature(value))
+    except BaseException:
+        return None
+
+
+def _source_preview(value):
+    try:
+        source = pyinspect.getsource(value)
+    except BaseException as exc:
+        return {
+            "text": None,
+            "truncated": False,
+            "source_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    text, truncated, _ = _truncate_text(source, _SOURCE_PREVIEW_MAX_LEN)
+    return {
+        "text": text,
+        "truncated": truncated,
+    }
+
+
+def _callable_payload(value):
+    module = getattr(value, "__module__", None)
+    signature = _safe_signature(value)
+    doc = _doc_payload(value)
+    source = _source_preview(value)
+    return {
+        "module": module,
+        "signature": signature,
+        "doc": doc["text"],
+        "source_preview": source["text"],
+        "source_truncated": source["truncated"],
+        **({"source_error": source["source_error"]} if "source_error" in source else {}),
+    }
+
+
+def _exception_payload(value):
+    if isinstance(value, BaseException):
+        return {
+            "exc_type": type(value).__name__,
+            "message": str(value),
+        }
+    return None
+
+
+def _limits_payload():
+    return {
+        "repr_max_chars": _REPR_MAX_LEN,
+        "doc_max_chars": _DOC_MAX_LEN,
+        "sample_max_items": _SAMPLE_MAX_ITEMS,
+        "member_max_per_group": _MEMBER_MAX_PER_GROUP,
+        "source_preview_max_chars": _SOURCE_PREVIEW_MAX_LEN,
+    }
+
+
+def _with_timeout(fn):
+    if not hasattr(signal, "SIGALRM"):
+        return fn()
+    if threading.current_thread() is not threading.main_thread():
+        return fn()
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def _timeout_handler(_signum, _frame):
+        raise TimeoutError("inspect timed out")
+
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, _INSPECT_TIMEOUT_SECONDS)
+    try:
+        return fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _pyaichat_inspect(expr):
+    def _run_inspect():
+        value = eval(expr, globals(), globals())
+        kind = _kind_of(value)
+        payload = {
+            "type": _type_payload(value),
+            "kind": kind,
+            "repr": _repr_payload(value),
+            "doc": _doc_payload(value),
+            "members": _members_payload(value),
+            "limits": _limits_payload(),
+        }
+
+        size = _size_payload(value)
+        if size is not None:
+            payload["size"] = size
+
+        sample = _sample_payload(value, kind)
+        if sample is not None:
+            payload["sample"] = sample
+
+        if callable(value):
+            payload["callable"] = _callable_payload(value)
+
+        exception = _exception_payload(value)
+        if exception is not None:
+            payload["exception"] = exception
+
+        return {"ok": True, "inspect_json": json.dumps(payload)}
+
+    try:
+        return _with_timeout(_run_inspect)
+    except BaseException as exc:
+        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
 
 
 def _pyaichat_exec_code(code):
@@ -51,48 +409,6 @@ def _pyaichat_eval_expr(expr):
             "stderr": err.getvalue(),
             "exception": _pyaichat_capture_exception(exc),
         }
-
-
-def _pyaichat_get_type(expr):
-    try:
-        value = eval(expr, globals(), globals())
-        value_type = type(value)
-        name = value_type.__name__
-        module = getattr(value_type, "__module__", "")
-        qualified_name = getattr(value_type, "__qualname__", name)
-        qualified = qualified_name if not module else f"{module}.{qualified_name}"
-        return {
-            "ok": True,
-            "name": name,
-            "module": module,
-            "qualified": qualified,
-        }
-    except BaseException as exc:
-        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
-
-
-def _pyaichat_get_repr(expr):
-    try:
-        value = eval(expr, globals(), globals())
-        return {"ok": True, "repr": repr(value)}
-    except BaseException as exc:
-        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
-
-
-def _pyaichat_get_dir(expr):
-    try:
-        value = eval(expr, globals(), globals())
-        return {"ok": True, "members": sorted(dir(value))}
-    except BaseException as exc:
-        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
-
-
-def _pyaichat_get_doc(expr):
-    try:
-        value = eval(expr, globals(), globals())
-        return {"ok": True, "doc": getattr(value, "__doc__", None)}
-    except BaseException as exc:
-        return {"ok": False, "exception": _pyaichat_capture_exception(exc)}
 
 
 def _pyaichat_run_user_input(line):

@@ -1,11 +1,15 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use serde_json::Value;
+
 use super::ExceptionInfo;
 
 pub const REPR_MAX_LEN: usize = 4096;
 pub const DOC_MAX_LEN: usize = 4096;
-pub const DIR_MAX_MEMBERS: usize = 256;
+pub const INSPECT_SAMPLE_MAX_ITEMS: usize = 16;
+pub const INSPECT_MEMBER_MAX_PER_GROUP: usize = 24;
+pub const INSPECT_SOURCE_PREVIEW_MAX_LEN: usize = 1200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalEntry {
@@ -13,32 +17,9 @@ pub struct GlobalEntry {
     pub type_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeInfo {
-    pub name: String,
-    pub module: String,
-    pub qualified: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReprInfo {
-    pub repr: String,
-    pub truncated: bool,
-    pub original_len: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirInfo {
-    pub members: Vec<String>,
-    pub truncated: bool,
-    pub original_len: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DocInfo {
-    pub doc: Option<String>,
-    pub truncated: bool,
-    pub original_len: usize,
+#[derive(Debug, Clone, PartialEq)]
+pub struct InspectInfo {
+    pub value: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,33 +52,6 @@ pub type CapabilityResult<T> = std::result::Result<T, CapabilityError>;
 
 pub trait CapabilityProvider {
     fn list_globals(&self) -> CapabilityResult<Vec<GlobalEntry>>;
-    fn get_type(&self, expr: &str) -> CapabilityResult<TypeInfo>;
-    fn get_repr(&self, expr: &str) -> CapabilityResult<ReprInfo>;
-    fn get_dir(&self, expr: &str) -> CapabilityResult<DirInfo>;
-    fn get_doc(&self, expr: &str) -> CapabilityResult<DocInfo>;
+    fn inspect(&self, expr: &str) -> CapabilityResult<InspectInfo>;
     fn eval_expr(&self, expr: &str) -> CapabilityResult<EvalInfo>;
-    fn get_last_exception(&self) -> CapabilityResult<Option<ExceptionInfo>>;
-}
-
-pub fn truncate_text(value: String, max_chars: usize) -> (String, bool, usize) {
-    let original_len = value.chars().count();
-    if original_len <= max_chars {
-        return (value, false, original_len);
-    }
-
-    let truncated = value.chars().take(max_chars).collect::<String>();
-    (truncated, true, original_len)
-}
-
-pub fn truncate_members(
-    mut members: Vec<String>,
-    max_members: usize,
-) -> (Vec<String>, bool, usize) {
-    let original_len = members.len();
-    if original_len <= max_members {
-        return (members, false, original_len);
-    }
-
-    members.truncate(max_members);
-    (members, true, original_len)
 }

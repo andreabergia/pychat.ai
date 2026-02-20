@@ -2,12 +2,11 @@ use anyhow::{Result, anyhow};
 use pyo3::prelude::*;
 use pyo3::types::PyModuleMethods;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyModule, PyTuple, PyTupleMethods};
+use serde_json::Value;
 use std::ffi::CString;
 
 use super::capabilities::{
-    CapabilityError, CapabilityProvider, CapabilityResult, DIR_MAX_MEMBERS, DOC_MAX_LEN, DirInfo,
-    DocInfo, EvalInfo, GlobalEntry, REPR_MAX_LEN, ReprInfo, TypeInfo, truncate_members,
-    truncate_text,
+    CapabilityError, CapabilityProvider, CapabilityResult, EvalInfo, GlobalEntry, InspectInfo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,37 +310,14 @@ impl PythonSession {
         value.extract().map_err(Self::cap_internal)
     }
 
-    fn cap_dict_optional_string(
+    fn cap_dict_json_value(
         result: &Bound<'_, pyo3::types::PyAny>,
         key: &str,
-    ) -> CapabilityResult<Option<String>> {
-        let dict = Self::cap_cast_dict(result)?;
-        let value = dict
-            .get_item(key)
-            .map_err(Self::cap_internal)?
-            .ok_or_else(|| Self::cap_invalid_shape(format!("missing {key} in helper result")))?;
-        if value.is_none() {
-            return Ok(None);
-        }
-
-        value
-            .extract()
-            .map(Some)
-            .map_err(|_| Self::cap_invalid_shape(format!("{key} must be string or None")))
-    }
-
-    fn cap_dict_string_list(
-        result: &Bound<'_, pyo3::types::PyAny>,
-        key: &str,
-    ) -> CapabilityResult<Vec<String>> {
-        let dict = Self::cap_cast_dict(result)?;
-        let value = dict
-            .get_item(key)
-            .map_err(Self::cap_internal)?
-            .ok_or_else(|| Self::cap_invalid_shape(format!("missing {key} in helper result")))?;
-        value
-            .extract()
-            .map_err(|_| Self::cap_invalid_shape(format!("{key} must be list[str]")))
+    ) -> CapabilityResult<Value> {
+        let encoded = Self::cap_dict_string(result, key)?;
+        serde_json::from_str(&encoded).map_err(|err| {
+            Self::cap_invalid_shape(format!("invalid JSON in {key} helper result: {err}"))
+        })
     }
 
     fn cap_dict_exception(
@@ -371,10 +347,10 @@ impl CapabilityProvider for PythonSession {
         PythonSession::list_globals(self).map_err(Self::cap_internal)
     }
 
-    fn get_type(&self, expr: &str) -> CapabilityResult<TypeInfo> {
-        Python::attach(|py| -> CapabilityResult<TypeInfo> {
+    fn inspect(&self, expr: &str) -> CapabilityResult<InspectInfo> {
+        Python::attach(|py| -> CapabilityResult<InspectInfo> {
             let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_get_type", (expr,))
+            let result = Self::call_runtime_helper(main, "_pyaichat_inspect", (expr,))
                 .map_err(Self::cap_internal)?;
             if !Self::cap_result_ok(&result)? {
                 return Err(CapabilityError::PythonException(Self::cap_dict_exception(
@@ -382,81 +358,16 @@ impl CapabilityProvider for PythonSession {
                 )?));
             }
 
-            Ok(TypeInfo {
-                name: Self::cap_dict_string(&result, "name")?,
-                module: Self::cap_dict_string(&result, "module")?,
-                qualified: Self::cap_dict_string(&result, "qualified")?,
-            })
-        })
-    }
-
-    fn get_repr(&self, expr: &str) -> CapabilityResult<ReprInfo> {
-        Python::attach(|py| -> CapabilityResult<ReprInfo> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_get_repr", (expr,))
-                .map_err(Self::cap_internal)?;
-            if !Self::cap_result_ok(&result)? {
-                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
-                    &result,
-                )?));
+            let value = Self::cap_dict_json_value(&result, "inspect_json")?;
+            let type_is_object = value.get("type").is_some_and(Value::is_object);
+            let kind_is_string = value.get("kind").is_some_and(Value::is_string);
+            if !type_is_object || !kind_is_string {
+                return Err(Self::cap_invalid_shape(
+                    "inspect result must contain object type and string kind",
+                ));
             }
 
-            let repr = Self::cap_dict_string(&result, "repr")?;
-            let (repr, truncated, original_len) = truncate_text(repr, REPR_MAX_LEN);
-            Ok(ReprInfo {
-                repr,
-                truncated,
-                original_len,
-            })
-        })
-    }
-
-    fn get_dir(&self, expr: &str) -> CapabilityResult<DirInfo> {
-        Python::attach(|py| -> CapabilityResult<DirInfo> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_get_dir", (expr,))
-                .map_err(Self::cap_internal)?;
-            if !Self::cap_result_ok(&result)? {
-                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
-                    &result,
-                )?));
-            }
-
-            let members = Self::cap_dict_string_list(&result, "members")?;
-            let (members, truncated, original_len) = truncate_members(members, DIR_MAX_MEMBERS);
-            Ok(DirInfo {
-                members,
-                truncated,
-                original_len,
-            })
-        })
-    }
-
-    fn get_doc(&self, expr: &str) -> CapabilityResult<DocInfo> {
-        Python::attach(|py| -> CapabilityResult<DocInfo> {
-            let main = self.main_module.bind(py);
-            let result = Self::call_runtime_helper(main, "_pyaichat_get_doc", (expr,))
-                .map_err(Self::cap_internal)?;
-            if !Self::cap_result_ok(&result)? {
-                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
-                    &result,
-                )?));
-            }
-
-            let doc = Self::cap_dict_optional_string(&result, "doc")?;
-            let (doc, truncated, original_len) = match doc {
-                Some(doc) => {
-                    let (doc, truncated, original_len) = truncate_text(doc, DOC_MAX_LEN);
-                    (Some(doc), truncated, original_len)
-                }
-                None => (None, false, 0),
-            };
-
-            Ok(DocInfo {
-                doc,
-                truncated,
-                original_len,
-            })
+            Ok(InspectInfo { value })
         })
     }
 
@@ -477,10 +388,6 @@ impl CapabilityProvider for PythonSession {
                 stderr: Self::cap_dict_string(&result, "stderr")?,
             })
         })
-    }
-
-    fn get_last_exception(&self) -> CapabilityResult<Option<ExceptionInfo>> {
-        PythonSession::get_last_exception(self).map_err(Self::cap_internal)
     }
 }
 
@@ -634,93 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn capability_get_type_returns_name_module_and_qualified() {
-        let session = PythonSession::initialize().expect("python session");
-        let type_info = CapabilityProvider::get_type(&session, "[1, 2, 3]").expect("get type");
-        assert_eq!(type_info.name, "list");
-        assert_eq!(type_info.module, "builtins");
-        assert_eq!(type_info.qualified, "builtins.list");
-    }
-
-    #[test]
-    fn capability_get_type_supports_user_defined_types() {
-        let session = PythonSession::initialize().expect("python session");
-        session
-            .exec_code("class CustomThing:\n    pass\nobj = CustomThing()")
-            .expect("seed custom type");
-
-        let type_info = CapabilityProvider::get_type(&session, "obj").expect("get type");
-        assert_eq!(type_info.name, "CustomThing");
-        assert_eq!(type_info.module, "__main__");
-        assert_eq!(type_info.qualified, "__main__.CustomThing");
-    }
-
-    #[test]
-    fn capability_get_repr_truncates_large_output() {
-        let session = PythonSession::initialize().expect("python session");
-        let repr_info = CapabilityProvider::get_repr(&session, "'x' * 5000").expect("get repr");
-        assert!(repr_info.truncated);
-        assert_eq!(repr_info.original_len, 5002);
-        assert_eq!(repr_info.repr.chars().count(), 4096);
-    }
-
-    #[test]
-    fn capability_get_dir_is_sorted_and_truncated() {
-        let session = PythonSession::initialize().expect("python session");
-        session
-            .exec_code(
-                "class CustomDir:\n    def __dir__(self):\n        return [f'n{i:03}' for i in range(300, -1, -1)]\nobj = CustomDir()",
-            )
-            .expect("seed dir object");
-
-        let dir_info = CapabilityProvider::get_dir(&session, "obj").expect("get dir");
-        assert!(dir_info.truncated);
-        assert_eq!(dir_info.original_len, 301);
-        assert_eq!(dir_info.members.len(), 256);
-        assert!(dir_info.members.windows(2).all(|w| w[0] <= w[1]));
-        assert_eq!(dir_info.members.first().expect("first member"), "n000");
-    }
-
-    #[test]
-    fn capability_get_doc_returns_none_when_missing() {
-        let session = PythonSession::initialize().expect("python session");
-        session
-            .exec_code("class NoDoc:\n    __doc__ = None\nobj = NoDoc()")
-            .expect("seed no doc object");
-
-        let doc_info = CapabilityProvider::get_doc(&session, "obj").expect("get doc");
-        assert!(!doc_info.truncated);
-        assert_eq!(doc_info.original_len, 0);
-        assert!(doc_info.doc.is_none());
-    }
-
-    #[test]
-    fn capability_get_doc_truncates_long_doc() {
-        let session = PythonSession::initialize().expect("python session");
-        session
-            .exec_code("class LongDoc:\n    __doc__ = 'd' * 5000\nobj = LongDoc()")
-            .expect("seed long doc object");
-
-        let doc_info = CapabilityProvider::get_doc(&session, "obj").expect("get doc");
-        assert!(doc_info.truncated);
-        assert_eq!(doc_info.original_len, 5000);
-        assert_eq!(doc_info.doc.expect("doc present").chars().count(), 4096);
-    }
-
-    #[test]
-    fn capability_get_doc_returns_some_without_truncation() {
-        let session = PythonSession::initialize().expect("python session");
-        session
-            .exec_code("class HasDoc:\n    \"\"\"small docs\"\"\"")
-            .expect("seed doc object");
-
-        let doc_info = CapabilityProvider::get_doc(&session, "HasDoc").expect("get doc");
-        assert!(!doc_info.truncated);
-        assert_eq!(doc_info.original_len, 10);
-        assert_eq!(doc_info.doc.as_deref(), Some("small docs"));
-    }
-
-    #[test]
     fn capability_eval_expr_returns_value_and_output_streams() {
         let session = PythonSession::initialize().expect("python session");
         let eval = CapabilityProvider::eval_expr(
@@ -734,9 +554,130 @@ mod tests {
     }
 
     #[test]
-    fn capability_errors_surface_python_exception_payload() {
+    fn capability_inspect_returns_type_and_kind() {
         let session = PythonSession::initialize().expect("python session");
-        let err = CapabilityProvider::get_repr(&session, "missing_name")
+        let inspect = CapabilityProvider::inspect(&session, "42").expect("inspect");
+        assert_eq!(inspect.value["kind"], "number");
+        assert_eq!(inspect.value["type"]["name"], "int");
+    }
+
+    #[test]
+    fn capability_inspect_list_has_size_and_sample_metadata() {
+        let session = PythonSession::initialize().expect("python session");
+        let inspect = CapabilityProvider::inspect(&session, "list(range(30))").expect("inspect");
+        assert_eq!(inspect.value["kind"], "sequence");
+        assert_eq!(inspect.value["size"]["len"], 30);
+        assert_eq!(inspect.value["sample"]["shown"], 16);
+        assert_eq!(inspect.value["sample"]["total"], 30);
+        assert_eq!(inspect.value["sample"]["truncated"], true);
+    }
+
+    #[test]
+    fn capability_inspect_none_reports_none_kind() {
+        let session = PythonSession::initialize().expect("python session");
+        let inspect = CapabilityProvider::inspect(&session, "None").expect("inspect");
+        assert_eq!(inspect.value["kind"], "none");
+    }
+
+    #[test]
+    fn capability_inspect_callable_reports_signature_and_source() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("def fn(x):\n    return x + 1")
+            .expect("seed function");
+        let inspect = CapabilityProvider::inspect(&session, "fn").expect("inspect");
+        assert_eq!(inspect.value["kind"], "callable");
+        assert_eq!(inspect.value["callable"]["module"], "__main__");
+        assert_eq!(inspect.value["callable"]["signature"], "(x)");
+        let has_source_preview = inspect.value["callable"]["source_preview"]
+            .as_str()
+            .is_some_and(|s| s.contains("def fn(x):"));
+        let has_source_error = inspect.value["callable"]["source_error"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty());
+        assert!(has_source_preview || has_source_error);
+    }
+
+    #[test]
+    fn capability_inspect_exception_instance_includes_exception_section() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code(
+                "try:\n    raise ValueError('boom')\nexcept ValueError as exc:\n    saved_exc = exc",
+            )
+            .expect("seed exception");
+        let inspect = CapabilityProvider::inspect(&session, "saved_exc").expect("inspect");
+        assert_eq!(inspect.value["kind"], "exception");
+        assert_eq!(inspect.value["exception"]["exc_type"], "ValueError");
+        assert_eq!(inspect.value["exception"]["message"], "boom");
+    }
+
+    #[test]
+    fn capability_inspect_handles_circular_containers() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("x = []\nx.append(x)")
+            .expect("seed circular");
+        let inspect = CapabilityProvider::inspect(&session, "x").expect("inspect");
+        assert_eq!(inspect.value["kind"], "sequence");
+        assert_eq!(inspect.value["size"]["len"], 1);
+        assert_eq!(inspect.value["sample"]["shown"], 1);
+    }
+
+    #[test]
+    fn capability_inspect_handles_broken_repr() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code(
+                "class BrokenRepr:\n    def __repr__(self):\n        raise RuntimeError('repr boom')\nobj = BrokenRepr()",
+            )
+            .expect("seed broken repr");
+        let inspect = CapabilityProvider::inspect(&session, "obj").expect("inspect");
+        assert_eq!(inspect.value["kind"], "object");
+        assert!(
+            inspect.value["repr"]["repr_error"]
+                .as_str()
+                .is_some_and(|s| s.contains("repr boom"))
+        );
+    }
+
+    #[test]
+    fn capability_inspect_timeout_surfaces_as_python_exception() {
+        let session = PythonSession::initialize().expect("python session");
+        let timeout_supported = session
+            .eval_expr("hasattr(__import__('signal'), 'SIGALRM')")
+            .expect("check signal")
+            .value_repr;
+        let runs_on_main_thread = session
+            .eval_expr(
+                "__import__('threading').current_thread() is __import__('threading').main_thread()",
+            )
+            .expect("check thread")
+            .value_repr;
+        if timeout_supported != "True" || runs_on_main_thread != "True" {
+            return;
+        }
+
+        session
+            .exec_code(
+                "import __main__, time\n__main__._INSPECT_TIMEOUT_SECONDS = 0.05\nclass SlowRepr:\n    def __repr__(self):\n        time.sleep(0.2)\n        return 'slow'\nslow = SlowRepr()",
+            )
+            .expect("seed slow repr");
+        let err =
+            CapabilityProvider::inspect(&session, "slow").expect_err("inspect timeout should fail");
+        match err {
+            CapabilityError::PythonException(exc) => {
+                assert_eq!(exc.exc_type, "TimeoutError");
+                assert!(exc.message.contains("inspect timed out"));
+            }
+            other => panic!("expected PythonException, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capability_inspect_errors_surface_python_exception_payload() {
+        let session = PythonSession::initialize().expect("python session");
+        let err = CapabilityProvider::inspect(&session, "missing_name")
             .expect_err("name error should map to capability error");
         match err {
             CapabilityError::PythonException(exc) => {
@@ -765,30 +706,12 @@ mod tests {
     }
 
     #[test]
-    fn capability_get_last_exception_returns_same_payload_as_runtime_api() {
-        let session = PythonSession::initialize().expect("python session");
-        session.run_user_input("1 / 0").expect("run failure");
-
-        let direct = session
-            .get_last_exception()
-            .expect("runtime exception")
-            .expect("runtime exception exists");
-        let via_capability = CapabilityProvider::get_last_exception(&session)
-            .expect("capability exception")
-            .expect("capability exception exists");
-
-        assert_eq!(via_capability.exc_type, direct.exc_type);
-        assert_eq!(via_capability.message, direct.message);
-        assert_eq!(via_capability.traceback, direct.traceback);
-    }
-
-    #[test]
     fn capability_invalid_result_shape_surfaces_for_missing_ok() {
         let session = PythonSession::initialize().expect("python session");
 
         Python::attach(|py| {
             let code =
-                CString::new("def _pyaichat_get_repr(expr):\n    return {'repr': 'no ok key'}\n")
+                CString::new("def _pyaichat_inspect(expr):\n    return {'inspect_json': '{}'}\n")
                     .expect("python code cstring");
             let main = session.main_module.bind(py);
             let globals = main.dict();
@@ -796,12 +719,37 @@ mod tests {
                 .expect("override helper in session globals");
         });
 
-        let err = CapabilityProvider::get_repr(&session, "1 + 1")
+        let err = CapabilityProvider::inspect(&session, "1 + 1")
             .expect_err("malformed helper payload should fail");
 
         match err {
             CapabilityError::InvalidResultShape(msg) => {
                 assert!(msg.contains("missing ok"));
+            }
+            other => panic!("expected InvalidResultShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capability_inspect_invalid_result_shape_for_missing_kind() {
+        let session = PythonSession::initialize().expect("python session");
+
+        Python::attach(|py| {
+            let code = CString::new(
+                "def _pyaichat_inspect(expr):\n    return {'ok': True, 'inspect_json': '{\"type\": {\"name\": \"int\"}}'}\n",
+            )
+            .expect("python code cstring");
+            let main = session.main_module.bind(py);
+            let globals = main.dict();
+            py.run(code.as_c_str(), Some(&globals), Some(&globals))
+                .expect("override helper in session globals");
+        });
+
+        let err = CapabilityProvider::inspect(&session, "1 + 1")
+            .expect_err("malformed inspect payload should fail");
+        match err {
+            CapabilityError::InvalidResultShape(msg) => {
+                assert!(msg.contains("inspect result must contain"));
             }
             other => panic!("expected InvalidResultShape, got {other:?}"),
         }
