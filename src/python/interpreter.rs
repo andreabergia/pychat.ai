@@ -482,7 +482,7 @@ impl PythonSession {
                 "original_len": repr_original_len,
             },
             "doc": doc_payload,
-            "members": self.members_payload(py, value)?,
+            "members": self.members_payload(py, value),
             "limits": {
                 "repr_max_chars": super::capabilities::REPR_MAX_LEN,
                 "doc_max_chars": super::capabilities::DOC_MAX_LEN,
@@ -558,6 +558,19 @@ impl PythonSession {
         }
         if matches!(type_name.as_str(), "set" | "frozenset") {
             return "set".to_string();
+        }
+
+        if let (Ok(collections_abc), Ok(builtins)) = (
+            PyModule::import(py, "collections.abc"),
+            PyModule::import(py, "builtins"),
+        ) && let Ok(iterator_type) = collections_abc.getattr("Iterator")
+            && builtins
+                .getattr("isinstance")
+                .and_then(|f| f.call1((value, iterator_type)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+        {
+            return "iterator".to_string();
         }
 
         if let Ok(inspect) = PyModule::import(py, "inspect") {
@@ -754,35 +767,56 @@ impl PythonSession {
         }))
     }
 
-    fn members_payload(
-        &self,
-        py: Python<'_>,
-        value: &Bound<'_, PyAny>,
-    ) -> Result<Value, ExceptionInfo> {
-        let builtins = PyModule::import(py, "builtins").map_err(|err| {
-            self.capture_exception(py, &err)
-                .unwrap_or_else(|_| ExceptionInfo {
-                    exc_type: "ImportError".to_string(),
-                    message: "failed to import builtins".to_string(),
-                    traceback: String::new(),
-                })
-        })?;
-        let dir = builtins
-            .getattr("dir")
-            .and_then(|f| f.call1((value,)))
-            .map_err(|err| {
-                self.capture_exception(py, &err)
-                    .unwrap_or_else(|_| ExceptionInfo {
-                        exc_type: "TypeError".to_string(),
-                        message: "dir failed".to_string(),
-                        traceback: String::new(),
-                    })
-            })?;
-        let mut names = dir.extract::<Vec<String>>().map_err(|err| ExceptionInfo {
-            exc_type: "TypeError".to_string(),
-            message: err.to_string(),
-            traceback: err.to_string(),
-        })?;
+    fn members_payload(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> Value {
+        let builtins = match PyModule::import(py, "builtins") {
+            Ok(v) => v,
+            Err(err) => {
+                let details = self
+                    .capture_exception(py, &err)
+                    .map(|v| format!("{}: {}", v.exc_type, v.message))
+                    .unwrap_or_else(|_| err.to_string());
+                return serde_json::json!({
+                    "data": [],
+                    "callables": [],
+                    "dunder_count": 0,
+                    "shown_per_group": super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP,
+                    "truncated": false,
+                    "members_error": details,
+                });
+            }
+        };
+
+        let dir = match builtins.getattr("dir").and_then(|f| f.call1((value,))) {
+            Ok(v) => v,
+            Err(err) => {
+                let details = self
+                    .capture_exception(py, &err)
+                    .map(|v| format!("{}: {}", v.exc_type, v.message))
+                    .unwrap_or_else(|_| err.to_string());
+                return serde_json::json!({
+                    "data": [],
+                    "callables": [],
+                    "dunder_count": 0,
+                    "shown_per_group": super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP,
+                    "truncated": false,
+                    "members_error": details,
+                });
+            }
+        };
+
+        let mut names = match dir.extract::<Vec<String>>() {
+            Ok(v) => v,
+            Err(err) => {
+                return serde_json::json!({
+                    "data": [],
+                    "callables": [],
+                    "dunder_count": 0,
+                    "shown_per_group": super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP,
+                    "truncated": false,
+                    "members_error": format!("TypeError: {err}"),
+                });
+            }
+        };
         names.sort();
 
         let inspect = PyModule::import(py, "inspect").ok();
@@ -817,13 +851,13 @@ impl PythonSession {
             }
         }
 
-        Ok(serde_json::json!({
+        serde_json::json!({
             "data": data,
             "callables": callables,
             "dunder_count": dunder_count,
             "shown_per_group": super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP,
             "truncated": non_dunder_total > (data.len() + callables.len()),
-        }))
+        })
     }
 
     fn callable_payload(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> Value {
@@ -1256,6 +1290,41 @@ mod tests {
         assert_eq!(inspect.value["sample"]["shown"], 16);
         assert_eq!(inspect.value["sample"]["total"], 1_000_000_000_000_u64);
         assert_eq!(inspect.value["sample"]["truncated"], true);
+    }
+
+    #[test]
+    fn capability_inspect_iterator_does_not_advance_state() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("it = iter([1, 2, 3])")
+            .expect("seed iterator");
+
+        let inspect = CapabilityProvider::inspect(&session, "it").expect("inspect");
+        assert_eq!(inspect.value["kind"], "iterator");
+        assert!(inspect.value.get("sample").is_none());
+
+        let next_value = session.eval_expr("next(it)").expect("next iterator");
+        assert_eq!(next_value.value_repr, "1");
+    }
+
+    #[test]
+    fn capability_inspect_handles_broken_dir_without_failing() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code(
+                "class BrokenDir:\n    def __dir__(self):\n        raise RuntimeError('dir boom')\nobj = BrokenDir()",
+            )
+            .expect("seed broken dir");
+
+        let inspect = CapabilityProvider::inspect(&session, "obj").expect("inspect");
+        assert_eq!(inspect.value["kind"], "object");
+        assert_eq!(inspect.value["members"]["data"], serde_json::json!([]));
+        assert_eq!(inspect.value["members"]["callables"], serde_json::json!([]));
+        assert!(
+            inspect.value["members"]["members_error"]
+                .as_str()
+                .is_some_and(|s| s.contains("dir boom"))
+        );
     }
 
     #[test]
