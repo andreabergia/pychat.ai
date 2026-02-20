@@ -35,7 +35,7 @@ impl ParseError {
     }
 }
 
-pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help\n  /mode [py|ai]\n  /clear\n  /history [n]\n  /trace\n  /inspect <expr>\n  /last_error\n  /include <file.py>\n  /run <file.py>\n  /show_source <name>\n  /steps [on|off]";
+pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help                Show this command list\n  /mode [py|ai]        Show or switch active mode\n  /clear               Clear the timeline output\n  /history [n]         Show command/input history (or last n)\n  /trace               Show path to the current trace file\n  /inspect <expr>      Inspect a Python expression as structured JSON\n  /last_error          Show the last Python exception traceback\n  /include <file.py>   Execute a Python file in the current session\n  /run <file.py>       Alias for /include\n  /show_source <name>  Show source code for a function/class/module name\n  /steps [on|off]      Show or hide assistant reasoning steps";
 
 pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
     if !line.starts_with('/') {
