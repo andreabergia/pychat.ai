@@ -612,7 +612,7 @@ fn execute_command(state: &mut AppState, ui_state: &mut UiState, line: &str) {
             }
         },
         Command::Include { path } => execute_include_command(state, ui_state, &path),
-        Command::Source { name } => execute_source_command(state, ui_state, &name),
+        Command::ShowSource { name } => execute_source_command(state, ui_state, &name),
         Command::Steps(steps) => {
             if let Some(value) = steps {
                 ui_state.show_assistant_steps = value;

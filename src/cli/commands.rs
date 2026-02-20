@@ -8,7 +8,7 @@ pub(crate) enum Command {
     Inspect { expr: String },
     LastError,
     Include { path: String },
-    Source { name: String },
+    ShowSource { name: String },
     Steps(Option<bool>),
 }
 
@@ -35,7 +35,7 @@ impl ParseError {
     }
 }
 
-pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help\n  /mode [py|ai]\n  /clear\n  /history [n]\n  /trace\n  /inspect <expr>\n  /last_error\n  /include <file.py>\n  /run <file.py>\n  /source <name>\n  /steps [on|off]";
+pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help\n  /mode [py|ai]\n  /clear\n  /history [n]\n  /trace\n  /inspect <expr>\n  /last_error\n  /include <file.py>\n  /run <file.py>\n  /show_source <name>\n  /steps [on|off]";
 
 pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
     if !line.starts_with('/') {
@@ -63,8 +63,8 @@ pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
         "last_error" => expect_no_args(rest, Command::LastError, "usage: /last_error"),
         "include" => parse_include(rest, "include"),
         "run" => parse_include(rest, "run"),
-        "source" => parse_required_text_arg(rest, "usage: /source <name>")
-            .map(|name| Command::Source { name }),
+        "show_source" => parse_required_text_arg(rest, "usage: /show_source <name>")
+            .map(|name| Command::ShowSource { name }),
         "steps" => parse_steps(rest),
         _ => Err(ParseError::new(format!(
             "unknown command '/{name}'. Try /help"
@@ -160,7 +160,7 @@ mod tests {
             "/last_error",
             "/include <file.py>",
             "/run <file.py>",
-            "/source <name>",
+            "/show_source <name>",
             "/steps [on|off]",
         ] {
             assert!(HELP_TEXT.contains(needle), "missing help entry: {needle}");
@@ -212,8 +212,8 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_command("/source my_fn").expect("source"),
-            Command::Source {
+            parse_command("/show_source my_fn").expect("show_source"),
+            Command::ShowSource {
                 name: "my_fn".to_string()
             }
         );
