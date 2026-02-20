@@ -667,19 +667,6 @@ impl PythonSession {
             return "set".to_string();
         }
 
-        if let (Ok(collections_abc), Ok(builtins)) = (
-            PyModule::import(py, "collections.abc"),
-            PyModule::import(py, "builtins"),
-        ) && let Ok(iterator_type) = collections_abc.getattr("Iterator")
-            && builtins
-                .getattr("isinstance")
-                .and_then(|f| f.call1((value, iterator_type)))
-                .and_then(|v| v.extract::<bool>())
-                .unwrap_or(false)
-        {
-            return "iterator".to_string();
-        }
-
         if let Ok(inspect) = PyModule::import(py, "inspect") {
             if inspect
                 .getattr("isasyncgen")
@@ -721,6 +708,19 @@ impl PythonSession {
             {
                 return "class".to_string();
             }
+        }
+
+        if let (Ok(collections_abc), Ok(builtins)) = (
+            PyModule::import(py, "collections.abc"),
+            PyModule::import(py, "builtins"),
+        ) && let Ok(iterator_type) = collections_abc.getattr("Iterator")
+            && builtins
+                .getattr("isinstance")
+                .and_then(|f| f.call1((value, iterator_type)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+        {
+            return "iterator".to_string();
         }
 
         if self.is_exception_instance(py, value) {
@@ -1495,6 +1495,17 @@ mod tests {
 
         let next_value = session.eval_expr("next(it)").expect("next iterator");
         assert_eq!(next_value.value_repr, "1");
+    }
+
+    #[test]
+    fn capability_inspect_generator_reports_generator_kind() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code("g = (n for n in [1, 2, 3])")
+            .expect("seed generator");
+
+        let inspect = CapabilityProvider::inspect(&session, "g").expect("inspect");
+        assert_eq!(inspect.value["kind"], "generator");
     }
 
     #[test]
