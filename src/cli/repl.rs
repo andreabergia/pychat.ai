@@ -29,6 +29,7 @@ pub enum Mode {
 
 pub struct AppState {
     pub mode: Mode,
+    pub session_id: String,
     pub python: PythonSession,
     pub llm: Option<GeminiProvider>,
     pub agent_config: AgentConfig,
@@ -38,6 +39,7 @@ pub struct AppState {
 #[derive(Debug, Clone)]
 struct UiState {
     mode: Mode,
+    session_id: String,
     python_input: String,
     assistant_input: String,
     show_assistant_steps: bool,
@@ -49,9 +51,15 @@ struct UiState {
 }
 
 impl UiState {
-    fn new(mode: Mode, color_enabled: bool, theme_config: &ThemeConfig) -> Self {
+    fn new(
+        mode: Mode,
+        session_id: String,
+        color_enabled: bool,
+        theme_config: &ThemeConfig,
+    ) -> Self {
         Self {
             mode,
+            session_id,
             python_input: String::new(),
             assistant_input: String::new(),
             show_assistant_steps: true,
@@ -135,7 +143,12 @@ impl UiState {
 
 pub async fn run_repl(state: &mut AppState) -> Result<()> {
     let color_enabled = resolve_color_enabled();
-    let mut ui_state = UiState::new(state.mode, color_enabled, &state.theme_config);
+    let mut ui_state = UiState::new(
+        state.mode,
+        state.session_id.clone(),
+        color_enabled,
+        &state.theme_config,
+    );
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -148,6 +161,7 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+    println!("{}", session_closed_message(&state.session_id));
 
     run_result
 }
@@ -480,7 +494,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     let status_left = Paragraph::new(mode_text).style(ui_state.theme.style(ThemeToken::Status));
     frame.render_widget(status_left, chunks[2]);
 
-    let status_right = Paragraph::new("PyAiChat")
+    let status_right = Paragraph::new(status_right_text(&ui_state.session_id))
         .style(ui_state.theme.style(ThemeToken::Status))
         .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(status_right, chunks[2]);
@@ -699,12 +713,21 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
     format!("{mode_text} | Show agent thinking: {steps_text} (Ctrl-T)")
 }
 
+fn status_right_text(session_id: &str) -> String {
+    format!("PyAiChat | Session: {session_id}")
+}
+
+fn session_closed_message(session_id: &str) -> String {
+    format!("PyAiChat session ended.\nSession ID: {session_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Mode, append_newline_with_indent, format_tool_error_line, format_tool_request_line,
         format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
-        preview_text, prompt_for, resolve_color_enabled_with, toggle_mode,
+        preview_text, prompt_for, resolve_color_enabled_with, session_closed_message,
+        status_right_text, toggle_mode,
     };
     use serde_json::json;
 
@@ -782,6 +805,19 @@ mod tests {
         assert_eq!(
             mode_status_text(Mode::Assistant, false),
             "Mode: AI Assistant | Show agent thinking: Off (Ctrl-T)"
+        );
+    }
+
+    #[test]
+    fn status_right_text_includes_session_id() {
+        assert_eq!(status_right_text("abc123"), "PyAiChat | Session: abc123");
+    }
+
+    #[test]
+    fn session_closed_message_includes_label_and_id() {
+        assert_eq!(
+            session_closed_message("abc123"),
+            "PyAiChat session ended.\nSession ID: abc123"
         );
     }
 

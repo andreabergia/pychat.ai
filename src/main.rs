@@ -13,6 +13,7 @@ use config::AppConfig;
 use http::{client::HttpClient, debug::HttpDebugConfig};
 use llm::gemini::GeminiProvider;
 use python::PythonSession;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,6 +38,7 @@ async fn main() -> Result<()> {
 
     let mut app_state = AppState {
         mode: Mode::Python,
+        session_id: generate_session_id(),
         python,
         llm,
         agent_config: AgentConfig::default(),
@@ -44,4 +46,11 @@ async fn main() -> Result<()> {
     };
 
     run_repl(&mut app_state).await
+}
+
+fn generate_session_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    format!("{millis:x}-{:x}", std::process::id())
 }
