@@ -100,12 +100,8 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 **Core Capabilities**:
 
 1. `list_globals()` → Return all variables in current scope
-2. `get_type(expr)` → Get type information for expression
-3. `get_repr(expr)` → Get string representation
-4. `get_dir(expr)` → List attributes/members
-5. `get_doc(expr)` → Fetch documentation string
-6. `eval_expr(expr)` → Evaluate expression (MVP: unrestricted)
-7. `get_last_exception()` → Return last exception details
+2. `inspect(expr)` → Return structured inspection payload for expression
+3. `eval_expr(expr)` → Evaluate expression (MVP: unrestricted)
 
 **Implementation**:
 - Define capability trait/interface in Rust
@@ -117,7 +113,7 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
   - No AST validation/sandbox/timeouts in this phase (deferred)
 
 **Deliverables**:
-- All 7 capabilities implemented
+- All 3 capabilities implemented
 - Well-defined Rust interface
 - MVP security posture documented (trusted local use; hardening deferred)
 
@@ -283,6 +279,6 @@ pyaichat/
 
 ## Explicit Deferrals From Phase 1
 
-- Capability APIs (`list_globals`, `get_type`, `get_repr`, `get_dir`, `get_doc`, `eval_expr`, `get_last_exception`)
+- Capability APIs (`list_globals`, `inspect`, `eval_expr`)
 - LLM provider implementation and agent loop wiring
 - Vendored Python packaging/distribution workflow

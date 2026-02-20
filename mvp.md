@@ -117,12 +117,8 @@ Defines the **read-only interface** between the assistant and Python runtime.
 **MVP capabilities**:
 
 - `list_globals()`: discover variables in scope
-- `get_type(expr)`: retrieve the type of an expression
-- `get_repr(expr)`: get a textual representation
-- `get_dir(expr)`: list attributes/members
-- `get_doc(expr)`: fetch documentation
+- `inspect(expr)`: retrieve structured runtime inspection details
 - `eval_expr(expr)`: evaluate expressions (read-only, restricted)
-- `get_last_exception()`: inspect last runtime error
 
 **Reasoning**: Minimal, safe, and sufficient for interactive exploration; other capabilities deferred.
 

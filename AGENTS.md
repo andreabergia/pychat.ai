@@ -26,12 +26,8 @@ Embedded Python Interpreter (persistent session, state, execution)
 
 ### Core Capabilities (MVP)
 1. `list_globals()` - discover variables in scope
-2. `get_type(expr)` - retrieve type of expression
-3. `get_repr(expr)` - get textual representation
-4. `get_dir(expr)` - list attributes/members
-5. `get_doc(expr)` - fetch documentation
-6. `eval_expr(expr)` - evaluate expressions (read-only, restricted)
-7. `get_last_exception()` - inspect last runtime error
+2. `inspect(expr)` - structured inspection for objects/functions/containers
+3. `eval_expr(expr)` - evaluate expressions (read-only, restricted)
 
 ### Two Modes
 - **Python Mode**: Standard REPL execution
