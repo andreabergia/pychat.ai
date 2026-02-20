@@ -860,7 +860,10 @@ impl PythonSession {
                 .name()
                 .map(|v| v.to_string())
                 .unwrap_or_default();
-            if !matches!(type_name.as_str(), "list" | "tuple" | "range" | "set" | "frozenset") {
+            if !matches!(
+                type_name.as_str(),
+                "list" | "tuple" | "range" | "set" | "frozenset"
+            ) {
                 return None;
             }
             let Ok(iter) = value.try_iter() else {
