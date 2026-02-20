@@ -5,6 +5,8 @@ PyAIChat is a minimal command-line Python environment combining normal code exec
 
 **One-liner**: A minimal Python REPL with a conversational assistant that inspects and explains live runtime state for interactive exploration.
 
+It has not been released yet, so we do not have to worry about backward compatibility or preserving any user's settings.
+
 ## Core Architecture
 
 ### Tech Stack
@@ -94,4 +96,3 @@ Embedded Python Interpreter (persistent session, state, execution)
 - Always run tests, formatter, and linter before declaring a task "done"
 - When implementing a plan, split into multiple logical git commits
 - For task management, to break down complex work, track progress across sessions, and coordinate multi-step implementations, use `/dex`
-
