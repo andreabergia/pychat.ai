@@ -1,5 +1,8 @@
 use crate::agent::{AgentConfig, AgentProgressEvent, run_question_with_events};
 use crate::cli::theme::Theme;
+use crate::cli::timeline::{
+    AssistantStepEvent, AssistantTurn, AssistantTurnState, OutputKind, Timeline,
+};
 use crate::config::{ThemeConfig, ThemeToken};
 use crate::llm::gemini::GeminiProvider;
 use crate::python::{InputCompleteness, PythonSession, UserRunResult};
@@ -32,49 +35,6 @@ pub struct AppState {
     pub theme_config: ThemeConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputKind {
-    UserInputPython,
-    UserInputAssistant,
-    PythonValue,
-    PythonStdout,
-    PythonStderr,
-    PythonTraceback,
-    AssistantText,
-    AssistantWaiting,
-    AssistantProgressRequest,
-    AssistantProgressResult,
-    SystemInfo,
-    SystemError,
-}
-
-#[derive(Debug, Clone)]
-enum TimelineEntry {
-    UserInputPython(String),
-    OutputLine { kind: OutputKind, text: String },
-    AssistantTurn(AssistantTurn),
-}
-
-#[derive(Debug, Clone)]
-struct AssistantTurn {
-    prompt: String,
-    events: Vec<AssistantStepEvent>,
-    state: AssistantTurnState,
-}
-
-#[derive(Debug, Clone)]
-enum AssistantTurnState {
-    InFlight,
-    CompletedText(String),
-    CompletedError(String),
-}
-
-#[derive(Debug, Clone)]
-enum AssistantStepEvent {
-    ToolRequest { text: String },
-    ToolResult { text: String },
-}
-
 #[derive(Debug, Clone)]
 struct UiState {
     mode: Mode,
@@ -83,7 +43,7 @@ struct UiState {
     show_assistant_steps: bool,
     history: Vec<String>,
     history_index: Option<usize>,
-    timeline: Vec<TimelineEntry>,
+    timeline: Timeline,
     should_quit: bool,
     theme: Theme,
 }
@@ -97,7 +57,7 @@ impl UiState {
             show_assistant_steps: true,
             history: Vec::new(),
             history_index: None,
-            timeline: Vec::new(),
+            timeline: Timeline::new(),
             should_quit: false,
             theme: Theme::from_config(color_enabled, theme_config),
         }
@@ -118,37 +78,19 @@ impl UiState {
     }
 
     fn push_timeline_output(&mut self, kind: OutputKind, text: &str) {
-        for line in split_output_lines(text) {
-            self.timeline.push(TimelineEntry::OutputLine {
-                kind,
-                text: line.to_string(),
-            });
-        }
+        self.timeline.push_output(kind, text);
     }
 
     fn push_user_input(&mut self, text: &str) {
-        for line in split_output_lines(text) {
-            self.timeline
-                .push(TimelineEntry::UserInputPython(line.to_string()));
-        }
+        self.timeline.push_user_input_python(text);
     }
 
     fn push_assistant_turn(&mut self, prompt: String) -> usize {
-        let index = self.timeline.len();
-        self.timeline
-            .push(TimelineEntry::AssistantTurn(AssistantTurn {
-                prompt,
-                events: Vec::new(),
-                state: AssistantTurnState::InFlight,
-            }));
-        index
+        self.timeline.push_assistant_turn(prompt)
     }
 
     fn assistant_turn_mut(&mut self, index: usize) -> Option<&mut AssistantTurn> {
-        match self.timeline.get_mut(index) {
-            Some(TimelineEntry::AssistantTurn(turn)) => Some(turn),
-            _ => None,
-        }
+        self.timeline.assistant_turn_mut(index)
     }
 
     fn push_history(&mut self, line: &str) {
@@ -488,7 +430,9 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         ])
         .split(frame.area());
 
-    let lines = render_timeline_lines(ui_state);
+    let lines = ui_state
+        .timeline
+        .render_lines(&ui_state.theme, ui_state.show_assistant_steps);
 
     let visible_lines = usize::from(chunks[0].height);
     let scroll = lines.len().saturating_sub(visible_lines);
@@ -555,139 +499,10 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
-fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
-    if ui_state.timeline.is_empty() {
-        return vec![Line::from(Span::styled(
-            "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
-            ui_state
-                .theme
-                .style(output_token_for(OutputKind::SystemInfo)),
-        ))];
-    }
-
-    let mut lines = Vec::new();
-    for entry in &ui_state.timeline {
-        match entry {
-            TimelineEntry::UserInputPython(text) => lines.push(Line::from(vec![
-                Span::styled("py> ", ui_state.theme.style(ThemeToken::PythonPrompt)),
-                Span::styled(
-                    text.clone(),
-                    ui_state
-                        .theme
-                        .style(output_token_for(OutputKind::UserInputPython)),
-                ),
-            ])),
-            TimelineEntry::OutputLine { kind, text } => lines.push(Line::from(Span::styled(
-                text.clone(),
-                ui_state.theme.style(output_token_for(*kind)),
-            ))),
-            TimelineEntry::AssistantTurn(turn) => lines.extend(render_assistant_turn_lines(
-                &ui_state.theme,
-                turn,
-                ui_state.show_assistant_steps,
-            )),
-        }
-    }
-
-    lines
-}
-
-fn render_assistant_turn_lines(
-    theme: &Theme,
-    turn: &AssistantTurn,
-    show_assistant_steps: bool,
-) -> Vec<Line<'static>> {
-    const THINKING_BLOCK_PADDING: &str = "  ";
-    let mut lines = Vec::new();
-
-    lines.push(Line::from(vec![
-        Span::styled("ai> ", theme.style(ThemeToken::AssistantPrompt)),
-        Span::styled(
-            turn.prompt.clone(),
-            theme.style(output_token_for(OutputKind::UserInputAssistant)),
-        ),
-    ]));
-
-    if show_assistant_steps {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw(THINKING_BLOCK_PADDING),
-            Span::styled(
-                "Thinking...",
-                theme.style(output_token_for(OutputKind::AssistantWaiting)),
-            ),
-        ]));
-        for event in &turn.events {
-            match event {
-                AssistantStepEvent::ToolRequest { text } => {
-                    lines.push(Line::from(Span::styled(
-                        format!("{THINKING_BLOCK_PADDING}{text}"),
-                        theme.style(output_token_for(OutputKind::AssistantProgressRequest)),
-                    )));
-                }
-                AssistantStepEvent::ToolResult { text } => {
-                    lines.push(Line::from(Span::styled(
-                        format!("{THINKING_BLOCK_PADDING}{text}"),
-                        theme.style(output_token_for(OutputKind::AssistantProgressResult)),
-                    )));
-                }
-            }
-        }
-        lines.push(Line::from(""));
-    }
-
-    match &turn.state {
-        AssistantTurnState::InFlight => {}
-        AssistantTurnState::CompletedText(text) => {
-            for line in split_output_lines(text) {
-                lines.push(Line::from(Span::styled(
-                    line.to_string(),
-                    theme.style(output_token_for(OutputKind::AssistantText)),
-                )));
-            }
-        }
-        AssistantTurnState::CompletedError(message) => {
-            for line in split_output_lines(message) {
-                lines.push(Line::from(Span::styled(
-                    line.to_string(),
-                    theme.style(output_token_for(OutputKind::SystemError)),
-                )));
-            }
-        }
-    }
-
-    lines
-}
-
-fn split_output_lines(text: &str) -> Vec<&str> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-
-    text.lines().collect()
-}
-
 fn prompt_token_for(mode: Mode) -> ThemeToken {
     match mode {
         Mode::Python => ThemeToken::PythonPrompt,
         Mode::Assistant => ThemeToken::AssistantPrompt,
-    }
-}
-
-fn output_token_for(kind: OutputKind) -> ThemeToken {
-    match kind {
-        OutputKind::UserInputPython => ThemeToken::UserInputPython,
-        OutputKind::UserInputAssistant => ThemeToken::UserInputAssistant,
-        OutputKind::PythonValue => ThemeToken::PythonValue,
-        OutputKind::PythonStdout => ThemeToken::PythonStdout,
-        OutputKind::PythonStderr => ThemeToken::PythonStderr,
-        OutputKind::PythonTraceback => ThemeToken::PythonTraceback,
-        OutputKind::AssistantText => ThemeToken::AssistantText,
-        OutputKind::AssistantWaiting => ThemeToken::AssistantWaiting,
-        OutputKind::AssistantProgressRequest => ThemeToken::AssistantProgressRequest,
-        OutputKind::AssistantProgressResult => ThemeToken::AssistantProgressResult,
-        OutputKind::SystemInfo => ThemeToken::SystemInfo,
-        OutputKind::SystemError => ThemeToken::SystemError,
     }
 }
 
@@ -887,32 +702,11 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode, append_newline_with_indent,
-        format_tool_error_line, format_tool_request_line, format_tool_result_line,
-        input_cursor_position, last_line_indent, mode_status_text, preview_text, prompt_for,
-        render_assistant_turn_lines, resolve_color_enabled_with, split_output_lines, toggle_mode,
+        Mode, append_newline_with_indent, format_tool_error_line, format_tool_request_line,
+        format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
+        preview_text, prompt_for, resolve_color_enabled_with, toggle_mode,
     };
-    use crate::cli::theme::Theme;
     use serde_json::json;
-
-    fn completed_turn_fixture() -> AssistantTurn {
-        AssistantTurn {
-            prompt: "inspect x".to_string(),
-            events: vec![
-                AssistantStepEvent::ToolRequest {
-                    text: "-> Inspecting: x".to_string(),
-                },
-                AssistantStepEvent::ToolResult {
-                    text: "<- Inspection complete: int".to_string(),
-                },
-            ],
-            state: AssistantTurnState::CompletedText("x is an int".to_string()),
-        }
-    }
-
-    fn text_lines(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
-        lines.into_iter().map(|line| line.to_string()).collect()
-    }
 
     #[test]
     fn test_toggle_mode() {
@@ -948,12 +742,6 @@ mod tests {
     fn tty_enables_colors_by_default() {
         assert!(resolve_color_enabled_with(None, None, true));
         assert!(!resolve_color_enabled_with(None, None, false));
-    }
-
-    #[test]
-    fn split_lines_works() {
-        assert_eq!(split_output_lines("a\nb\n"), vec!["a", "b"]);
-        assert!(split_output_lines("").is_empty());
     }
 
     #[test]
@@ -994,100 +782,6 @@ mod tests {
         assert_eq!(
             mode_status_text(Mode::Assistant, false),
             "Mode: AI Assistant | Show agent thinking: Off (Ctrl-T)"
-        );
-    }
-
-    #[test]
-    fn render_assistant_turn_hides_steps_when_toggle_off() {
-        let turn = completed_turn_fixture();
-        let lines = text_lines(render_assistant_turn_lines(
-            &Theme::new(false),
-            &turn,
-            false,
-        ));
-        assert!(lines.iter().any(|line| line == "ai> inspect x"));
-        assert!(lines.iter().any(|line| line == "x is an int"));
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.starts_with("  -> Inspecting:"))
-        );
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.starts_with("  <- Inspection complete:"))
-        );
-        assert!(!lines.iter().any(|line| line == "  Thinking..."));
-    }
-
-    #[test]
-    fn render_assistant_turn_shows_steps_when_toggle_on() {
-        let turn = completed_turn_fixture();
-        let lines = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
-        assert!(lines.iter().any(|line| line == "  Thinking..."));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.starts_with("  -> Inspecting:"))
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.starts_with("  <- Inspection complete:"))
-        );
-        assert!(lines.iter().any(|line| line == "x is an int"));
-    }
-
-    #[test]
-    fn toggle_is_retroactive_for_completed_turn() {
-        let turn = completed_turn_fixture();
-        let with_steps = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
-        let without_steps = text_lines(render_assistant_turn_lines(
-            &Theme::new(false),
-            &turn,
-            false,
-        ));
-        assert_ne!(with_steps, without_steps);
-        assert!(
-            with_steps
-                .iter()
-                .any(|line| line.starts_with("  <- Inspection complete:"))
-        );
-        assert!(
-            !without_steps
-                .iter()
-                .any(|line| line.starts_with("  <- Inspection complete:"))
-        );
-    }
-
-    #[test]
-    fn inflight_turn_shows_thinking_header_and_optional_steps() {
-        let turn = AssistantTurn {
-            prompt: "inspect y".to_string(),
-            events: vec![AssistantStepEvent::ToolRequest {
-                text: "-> Inspecting: y".to_string(),
-            }],
-            state: AssistantTurnState::InFlight,
-        };
-
-        let hidden = text_lines(render_assistant_turn_lines(
-            &Theme::new(false),
-            &turn,
-            false,
-        ));
-        assert!(
-            !hidden
-                .iter()
-                .any(|line| line.starts_with("  -> Inspecting:"))
-        );
-        assert!(!hidden.iter().any(|line| line == "  Thinking..."));
-
-        let shown = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
-        assert!(shown.iter().any(|line| line == "  Thinking..."));
-        assert!(
-            shown
-                .iter()
-                .any(|line| line.starts_with("  -> Inspecting:"))
         );
     }
 
@@ -1138,55 +832,5 @@ mod tests {
             ),
             "<- Tool error (inspect): python_exception: NameError: x"
         );
-    }
-
-    #[test]
-    fn assistant_error_renders_message() {
-        let turn = AssistantTurn {
-            prompt: "inspect z".to_string(),
-            events: Vec::new(),
-            state: AssistantTurnState::CompletedError("Assistant request failed: boom".to_string()),
-        };
-
-        let lines = text_lines(render_assistant_turn_lines(
-            &Theme::new(false),
-            &turn,
-            false,
-        ));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == "Assistant request failed: boom")
-        );
-    }
-
-    #[test]
-    fn thinking_block_has_blank_line_padding() {
-        let turn = completed_turn_fixture();
-        let lines = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
-        let thinking_idx = lines
-            .iter()
-            .position(|line| line == "  Thinking...")
-            .expect("thinking header");
-        let request_idx = lines
-            .iter()
-            .position(|line| line.starts_with("  -> Inspecting:"))
-            .expect("request line");
-        let result_idx = lines
-            .iter()
-            .position(|line| line.starts_with("  <- Inspection complete:"))
-            .expect("result line");
-
-        assert!(thinking_idx > 0, "thinking line should not be first");
-        assert_eq!(lines[thinking_idx - 1], "");
-        assert!(
-            thinking_idx < request_idx,
-            "thinking header should precede requests"
-        );
-        assert!(
-            result_idx + 1 < lines.len(),
-            "result line should not be last"
-        );
-        assert_eq!(lines[result_idx + 1], "");
     }
 }
