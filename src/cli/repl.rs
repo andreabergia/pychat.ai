@@ -1,11 +1,14 @@
 use crate::agent::{AgentConfig, AgentProgressEvent, run_question_with_events};
+use crate::cli::commands::{Command, CommandMode, HELP_TEXT, is_command_line, parse_command};
 use crate::cli::theme::Theme;
 use crate::cli::timeline::{
     AssistantStepEvent, AssistantTurn, AssistantTurnState, OutputKind, Timeline,
 };
 use crate::config::{ThemeConfig, ThemeToken};
 use crate::llm::gemini::GeminiProvider;
-use crate::python::{InputCompleteness, PythonSession, UserRunResult};
+use crate::python::{
+    CapabilityError, CapabilityProvider, InputCompleteness, PythonSession, UserRunResult,
+};
 use crate::trace::SessionTrace;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -19,7 +22,9 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 use serde_json::Value;
+use std::fs;
 use std::io::{self, IsTerminal};
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +322,12 @@ async fn submit_current_line(
         return Ok(());
     }
 
+    if is_command_line(&line) {
+        ui_state.push_history(&line);
+        execute_command(state, ui_state, &line);
+        return Ok(());
+    }
+
     if ui_state.mode == Mode::Python {
         ui_state.push_user_input(&line);
         state.trace.log_input_python(&line);
@@ -486,8 +497,270 @@ async fn submit_current_line(
     Ok(())
 }
 
+fn execute_command(state: &mut AppState, ui_state: &mut UiState, line: &str) {
+    ui_state.timeline.push_user_input_command(line);
+    state.trace.log_output("cmd.in", line);
+
+    let command = match parse_command(line) {
+        Ok(command) => command,
+        Err(err) => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemError,
+                err.message(),
+            );
+            return;
+        }
+    };
+
+    match command {
+        Command::Help => {
+            push_output(ui_state, &state.trace, OutputKind::SystemInfo, HELP_TEXT);
+        }
+        Command::Mode(mode) => match mode {
+            Some(CommandMode::Python) => {
+                ui_state.mode = Mode::Python;
+                ui_state.history_index = None;
+                push_output(ui_state, &state.trace, OutputKind::SystemInfo, "mode: py");
+            }
+            Some(CommandMode::Assistant) => {
+                ui_state.mode = Mode::Assistant;
+                ui_state.history_index = None;
+                push_output(ui_state, &state.trace, OutputKind::SystemInfo, "mode: ai");
+            }
+            None => {
+                let current = match ui_state.mode {
+                    Mode::Python => "py",
+                    Mode::Assistant => "ai",
+                };
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemInfo,
+                    &format!("mode: {current}"),
+                );
+            }
+        },
+        Command::Clear => {
+            ui_state.timeline.clear();
+            push_output(ui_state, &state.trace, OutputKind::SystemInfo, "cleared");
+        }
+        Command::History(limit) => {
+            let text = format_history_output(&ui_state.history, limit);
+            push_output(ui_state, &state.trace, OutputKind::SystemInfo, &text);
+        }
+        Command::Trace => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemInfo,
+                &state.trace.file_path().display().to_string(),
+            );
+        }
+        Command::Inspect { expr } => match state.python.inspect(&expr) {
+            Ok(info) => match serde_json::to_string_pretty(&info.value) {
+                Ok(pretty) => push_output(ui_state, &state.trace, OutputKind::SystemInfo, &pretty),
+                Err(err) => push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemError,
+                    &format!("failed to format inspect result: {err}"),
+                ),
+            },
+            Err(CapabilityError::PythonException(exc)) => {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonTraceback,
+                    &exc.traceback,
+                );
+            }
+            Err(err) => {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemError,
+                    &format!("inspect failed: {err}"),
+                );
+            }
+        },
+        Command::LastError => match state.python.get_last_exception() {
+            Ok(Some(exc)) => {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonTraceback,
+                    &exc.traceback,
+                );
+            }
+            Ok(None) => {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemInfo,
+                    "no python exception recorded",
+                );
+            }
+            Err(err) => {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemError,
+                    &format!("failed to read last error: {err}"),
+                );
+            }
+        },
+        Command::Include { path } => execute_include_command(state, ui_state, &path),
+        Command::Source { name } => execute_source_command(state, ui_state, &name),
+        Command::Steps(steps) => {
+            if let Some(value) = steps {
+                ui_state.show_assistant_steps = value;
+            } else {
+                ui_state.show_assistant_steps = !ui_state.show_assistant_steps;
+            }
+            let steps_text = if ui_state.show_assistant_steps {
+                "on"
+            } else {
+                "off"
+            };
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemInfo,
+                &format!("steps: {steps_text}"),
+            );
+        }
+    }
+}
+
+fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &str) {
+    let path_ref = Path::new(path);
+    let source = match fs::read_to_string(path_ref) {
+        Ok(content) => content,
+        Err(err) => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemError,
+                &format!("failed to read {}: {err}", path_ref.display()),
+            );
+            return;
+        }
+    };
+
+    match state.python.run_exec_input(&source) {
+        Ok(UserRunResult::Executed(result)) => {
+            if !result.stdout.is_empty() {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonStdout,
+                    &result.stdout,
+                );
+            }
+            if !result.stderr.is_empty() {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonStderr,
+                    &result.stderr,
+                );
+            }
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemInfo,
+                &format!("included {}", path_ref.display()),
+            );
+        }
+        Ok(UserRunResult::Failed {
+            stdout,
+            stderr,
+            exception,
+        }) => {
+            if !stdout.is_empty() {
+                push_output(ui_state, &state.trace, OutputKind::PythonStdout, &stdout);
+            }
+            if !stderr.is_empty() {
+                push_output(ui_state, &state.trace, OutputKind::PythonStderr, &stderr);
+            }
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::PythonTraceback,
+                &exception.traceback,
+            );
+        }
+        Ok(UserRunResult::Evaluated(_)) => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemError,
+                "internal error: include unexpectedly evaluated expression",
+            );
+        }
+        Err(err) => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemError,
+                &format!("include failed: {err}"),
+            );
+        }
+    }
+}
+
+fn execute_source_command(state: &mut AppState, ui_state: &mut UiState, name: &str) {
+    let code = format!("print(__import__('inspect').getsource({name}), end='')");
+    match state.python.exec_code(&code) {
+        Ok(result) => {
+            if !result.stdout.is_empty() {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemInfo,
+                    &result.stdout,
+                );
+            }
+            if !result.stderr.is_empty() {
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonStderr,
+                    &result.stderr,
+                );
+            }
+        }
+        Err(err) => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemError,
+                &format!("source failed: {err}"),
+            );
+        }
+    }
+}
+
+fn format_history_output(history: &[String], limit: Option<usize>) -> String {
+    if history.is_empty() {
+        return "history is empty".to_string();
+    }
+
+    let count = limit.unwrap_or(history.len()).min(history.len());
+    let start = history.len().saturating_sub(count);
+    history[start..]
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| format!("{:>4}: {}", start + idx + 1, line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
-    let prompt = prompt_for(ui_state.mode);
+    let command_input = is_command_line(ui_state.current_input());
+    let prompt = prompt_for(ui_state.mode, command_input);
     let input_lines = render_input_lines(ui_state.current_input());
     let input_line_count = input_lines.len().max(1);
     let max_input_lines = 6usize;
@@ -525,12 +798,16 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         let prompt_span = if idx == 0 {
             Span::styled(
                 prompt,
-                ui_state.theme.style(prompt_token_for(ui_state.mode)),
+                ui_state
+                    .theme
+                    .style(prompt_token_for(ui_state.mode, command_input)),
             )
         } else {
             Span::styled(
                 prompt_padding.clone(),
-                ui_state.theme.style(prompt_token_for(ui_state.mode)),
+                ui_state
+                    .theme
+                    .style(prompt_token_for(ui_state.mode, command_input)),
             )
         };
         rendered_lines.push(Line::from(vec![
@@ -572,7 +849,11 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
-fn prompt_token_for(mode: Mode) -> ThemeToken {
+fn prompt_token_for(mode: Mode, command_input: bool) -> ThemeToken {
+    if command_input {
+        return ThemeToken::CommandPrompt;
+    }
+
     match mode {
         Mode::Python => ThemeToken::PythonPrompt,
         Mode::Assistant => ThemeToken::AssistantPrompt,
@@ -749,7 +1030,11 @@ fn resolve_color_enabled_with(
     is_tty
 }
 
-pub fn prompt_for(mode: Mode) -> &'static str {
+pub fn prompt_for(mode: Mode, command_input: bool) -> &'static str {
+    if command_input {
+        return "cmd>";
+    }
+
     match mode {
         Mode::Python => "py> ",
         Mode::Assistant => "ai> ",
@@ -808,13 +1093,19 @@ fn output_trace_kind(kind: OutputKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        Mode, append_newline_with_indent, format_tool_error_line, format_tool_request_line,
+        AppState, Mode, UiState, append_newline_with_indent, execute_command,
+        format_history_output, format_tool_error_line, format_tool_request_line,
         format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
         output_trace_kind, preview_text, prompt_for, resolve_color_enabled_with,
         session_closed_message, status_right_text, toggle_mode,
     };
+    use crate::agent::AgentConfig;
     use crate::cli::timeline::OutputKind;
+    use crate::config::ThemeConfig;
+    use crate::python::PythonSession;
+    use crate::trace::SessionTrace;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn test_toggle_mode() {
@@ -824,8 +1115,9 @@ mod tests {
 
     #[test]
     fn test_prompt_for() {
-        assert_eq!(prompt_for(Mode::Python), "py> ");
-        assert_eq!(prompt_for(Mode::Assistant), "ai> ");
+        assert_eq!(prompt_for(Mode::Python, false), "py> ");
+        assert_eq!(prompt_for(Mode::Assistant, false), "ai> ");
+        assert_eq!(prompt_for(Mode::Python, true), "cmd>");
     }
 
     #[test]
@@ -964,5 +1256,143 @@ mod tests {
             ),
             "<- Tool error (inspect): python_exception: NameError: x"
         );
+    }
+
+    #[test]
+    fn format_history_output_limits_tail_entries() {
+        let history = vec![
+            "a = 1".to_string(),
+            "/help".to_string(),
+            "x + 1".to_string(),
+            "/history 2".to_string(),
+        ];
+        assert_eq!(
+            format_history_output(&history, Some(2)),
+            "   3: x + 1\n   4: /history 2"
+        );
+    }
+
+    #[test]
+    fn execute_command_mode_and_steps_updates_ui_state() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("mode-steps", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/mode ai");
+        assert_eq!(ui_state.mode, Mode::Assistant);
+
+        execute_command(&mut state, &mut ui_state, "/steps off");
+        assert!(!ui_state.show_assistant_steps);
+
+        execute_command(&mut state, &mut ui_state, "/steps");
+        assert!(ui_state.show_assistant_steps);
+    }
+
+    #[test]
+    fn execute_command_trace_prints_exact_path() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("trace", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/trace");
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines.iter().any(|line| line == "cmd>/trace"),
+            "command input should be rendered in timeline"
+        );
+        let trace_path = state.trace.file_path().display().to_string();
+        assert!(lines.contains(&trace_path));
+    }
+
+    #[test]
+    fn include_and_run_execute_python_file_and_preserve_state() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("script.py");
+        std::fs::write(&file_path, "value = 41\nprint('loaded')\n").expect("write script");
+
+        let mut state = test_app_state("include", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(
+            &mut state,
+            &mut ui_state,
+            &format!("/include {}", file_path.display()),
+        );
+        assert_eq!(
+            state.python.eval_expr("value").expect("value").value_repr,
+            "41"
+        );
+
+        execute_command(
+            &mut state,
+            &mut ui_state,
+            &format!("/run {}", file_path.display()),
+        );
+        assert_eq!(
+            state.python.eval_expr("value").expect("value").value_repr,
+            "41"
+        );
+    }
+
+    #[test]
+    fn include_reports_missing_file_error() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("missing-file", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/include does_not_exist.py");
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("failed to read does_not_exist.py")),
+            "missing file error should be visible"
+        );
+    }
+
+    #[test]
+    fn include_rejects_non_python_path() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("invalid-path", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/include not_python.txt");
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines.iter().any(|line| line == "usage: /include <file.py>"),
+            "usage text should be shown"
+        );
+    }
+
+    fn test_app_state(session_id: &str, trace_dir: &std::path::Path) -> AppState {
+        AppState {
+            mode: Mode::Python,
+            session_id: session_id.to_string(),
+            python: PythonSession::initialize().expect("python"),
+            llm: None,
+            agent_config: AgentConfig::default(),
+            theme_config: ThemeConfig::default(),
+            trace: SessionTrace::create_in_temp_dir(session_id, trace_dir).expect("trace"),
+        }
+    }
+
+    fn test_ui_state() -> UiState {
+        UiState::new(
+            Mode::Python,
+            "test-session".to_string(),
+            false,
+            &ThemeConfig::default(),
+        )
+    }
+
+    fn timeline_text_lines(ui_state: &UiState) -> Vec<String> {
+        ui_state
+            .timeline
+            .render_lines(&ui_state.theme, ui_state.show_assistant_steps)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect()
     }
 }

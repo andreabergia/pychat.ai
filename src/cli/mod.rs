@@ -1,4 +1,5 @@
 mod args;
+mod commands;
 mod repl;
 pub(crate) mod theme;
 mod timeline;

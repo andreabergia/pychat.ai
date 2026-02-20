@@ -21,6 +21,7 @@ pub(crate) enum OutputKind {
 #[derive(Debug, Clone)]
 pub(crate) enum TimelineEntry {
     UserInputPython(String),
+    UserInputCommand(String),
     OutputLine { kind: OutputKind, text: String },
     AssistantTurn(AssistantTurn),
 }
@@ -71,6 +72,13 @@ impl Timeline {
         }
     }
 
+    pub(crate) fn push_user_input_command(&mut self, text: &str) {
+        for line in split_output_lines(text) {
+            self.entries
+                .push(TimelineEntry::UserInputCommand(line.to_string()));
+        }
+    }
+
     pub(crate) fn push_assistant_turn(&mut self, prompt: String) -> usize {
         let index = self.entries.len();
         self.entries
@@ -112,6 +120,10 @@ impl Timeline {
 
         lines
     }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
 }
 
 trait TimelineWidget {
@@ -131,6 +143,24 @@ impl TimelineWidget for PythonInputWidget<'_> {
     fn render(&self, context: &RenderContext<'_>, lines: &mut Vec<Line<'static>>) {
         lines.push(Line::from(vec![
             Span::styled("py> ", context.theme.style(ThemeToken::PythonPrompt)),
+            Span::styled(
+                self.text.to_string(),
+                context
+                    .theme
+                    .style(output_token_for(OutputKind::UserInputPython)),
+            ),
+        ]));
+    }
+}
+
+struct CommandInputWidget<'a> {
+    text: &'a str,
+}
+
+impl TimelineWidget for CommandInputWidget<'_> {
+    fn render(&self, context: &RenderContext<'_>, lines: &mut Vec<Line<'static>>) {
+        lines.push(Line::from(vec![
+            Span::styled("cmd>", context.theme.style(ThemeToken::CommandPrompt)),
             Span::styled(
                 self.text.to_string(),
                 context
@@ -237,6 +267,7 @@ impl TimelineWidget for AssistantTurnWidget<'_> {
 fn widget_for_entry(entry: &TimelineEntry) -> Box<dyn TimelineWidget + '_> {
     match entry {
         TimelineEntry::UserInputPython(text) => Box::new(PythonInputWidget { text }),
+        TimelineEntry::UserInputCommand(text) => Box::new(CommandInputWidget { text }),
         TimelineEntry::OutputLine { kind, text } => {
             Box::new(OutputLineWidget { kind: *kind, text })
         }

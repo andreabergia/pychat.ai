@@ -59,6 +59,9 @@ fn default_preset_style(token: ThemeToken) -> Style {
         ThemeToken::AssistantPrompt => Style::default()
             .fg(Color::Rgb(219, 75, 75))
             .add_modifier(Modifier::BOLD),
+        ThemeToken::CommandPrompt => Style::default()
+            .fg(Color::Rgb(255, 203, 107))
+            .add_modifier(Modifier::BOLD),
         ThemeToken::UserInputPython | ThemeToken::UserInputAssistant => {
             Style::default().fg(Color::White)
         }
@@ -91,6 +94,9 @@ fn light_preset_style(token: ThemeToken) -> Style {
             .add_modifier(Modifier::BOLD),
         ThemeToken::AssistantPrompt => Style::default()
             .fg(Color::Rgb(176, 64, 0))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::CommandPrompt => Style::default()
+            .fg(Color::Rgb(188, 76, 0))
             .add_modifier(Modifier::BOLD),
         ThemeToken::UserInputPython | ThemeToken::UserInputAssistant => {
             Style::default().fg(Color::Rgb(36, 41, 47))
@@ -127,6 +133,9 @@ fn high_contrast_preset_style(token: ThemeToken) -> Style {
         ThemeToken::AssistantPrompt => Style::default()
             .fg(Color::Rgb(255, 215, 0))
             .add_modifier(Modifier::BOLD),
+        ThemeToken::CommandPrompt => Style::default()
+            .fg(Color::Rgb(255, 255, 0))
+            .add_modifier(Modifier::BOLD),
         ThemeToken::UserInputPython | ThemeToken::UserInputAssistant => {
             Style::default().fg(Color::Rgb(255, 255, 255))
         }
@@ -158,7 +167,7 @@ fn high_contrast_preset_style(token: ThemeToken) -> Style {
 
 fn disabled_style(token: ThemeToken) -> Style {
     match token {
-        ThemeToken::PythonPrompt | ThemeToken::AssistantPrompt => {
+        ThemeToken::PythonPrompt | ThemeToken::AssistantPrompt | ThemeToken::CommandPrompt => {
             Style::default().add_modifier(Modifier::BOLD)
         }
         _ => Style::default(),

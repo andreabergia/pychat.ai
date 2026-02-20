@@ -57,6 +57,7 @@ pub struct PythonSession {
 
 const INSPECT_EVAL_TIMEOUT_SECONDS: f64 = 1.0;
 const MIN_TIMER_DELAY_SECONDS: f64 = 1e-6;
+static SOURCE_REGISTRATION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 impl PythonSession {
@@ -160,6 +161,33 @@ impl PythonSession {
                         })
                     }
                 }
+            }
+        })
+    }
+
+    pub fn run_exec_input(&self, code: &str) -> Result<UserRunResult> {
+        Python::attach(|py| -> Result<UserRunResult> {
+            let globals = self.globals.bind(py);
+            let output = self.capture_output(py, |py| {
+                let filename = self
+                    .register_source(py, code, "exec")
+                    .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+                let compiled = self.compile_source(py, code, &filename, "exec")?;
+                self.exec_compiled(py, globals, &compiled)?;
+                Ok(None)
+            })?;
+
+            if let Some(exception) = output.exception {
+                Ok(UserRunResult::Failed {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exception,
+                })
+            } else {
+                Ok(UserRunResult::Executed(ExecResult {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                }))
             }
         })
     }
@@ -374,7 +402,8 @@ impl PythonSession {
 
     fn register_source(&self, py: Python<'_>, source: &str, mode: &str) -> Result<String> {
         let counter = self.source_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        let filename = format!("<pyaichat-{mode}-{counter}>");
+        let global_id = SOURCE_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed) + 1;
+        let filename = format!("<pyaichat-{mode}-{global_id}-{counter}>");
         let text = if source.ends_with('\n') {
             source.to_string()
         } else {

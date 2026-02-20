@@ -59,6 +59,7 @@ impl FromStr for ThemePreset {
 pub enum ThemeToken {
     PythonPrompt,
     AssistantPrompt,
+    CommandPrompt,
     UserInputPython,
     UserInputAssistant,
     PythonValue,
@@ -82,6 +83,7 @@ impl FromStr for ThemeToken {
         match value {
             "python_prompt" => Ok(Self::PythonPrompt),
             "assistant_prompt" => Ok(Self::AssistantPrompt),
+            "command_prompt" => Ok(Self::CommandPrompt),
             "user_input_python" => Ok(Self::UserInputPython),
             "user_input_assistant" => Ok(Self::UserInputAssistant),
             "python_value" => Ok(Self::PythonValue),
@@ -102,10 +104,11 @@ impl FromStr for ThemeToken {
 }
 
 impl ThemeToken {
-    pub const fn all() -> [Self; 16] {
+    pub const fn all() -> [Self; 17] {
         [
             Self::PythonPrompt,
             Self::AssistantPrompt,
+            Self::CommandPrompt,
             Self::UserInputPython,
             Self::UserInputAssistant,
             Self::PythonValue,
