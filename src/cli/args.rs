@@ -2,7 +2,10 @@ use clap::Parser;
 
 #[derive(Debug, Parser, Clone, PartialEq, Eq)]
 #[command(name = "pyaichat")]
-#[command(about = "Minimal Python REPL with a conversational assistant")]
+#[command(
+    about = "Minimal Python REPL with a conversational assistant",
+    long_about = "Minimal Python REPL with a conversational assistant\n\nConfig file paths probed (first existing file wins):\n  1. $XDG_CONFIG_HOME/pyaichat/config.toml\n  2. ~/.config/pyaichat/config.toml"
+)]
 pub struct CliArgs {
     /// Enable verbose HTTP request/response debug logs.
     #[arg(short, long)]

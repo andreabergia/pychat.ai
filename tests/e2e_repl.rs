@@ -14,6 +14,14 @@ fn binary_help_smoke_test() {
         stdout.contains("Minimal Python REPL with a conversational assistant"),
         "help output should include app description"
     );
+    assert!(
+        stdout.contains("$XDG_CONFIG_HOME/pyaichat/config.toml"),
+        "help output should include XDG config probe path"
+    );
+    assert!(
+        stdout.contains("~/.config/pyaichat/config.toml"),
+        "help output should include home config probe path"
+    );
 }
 
 fn binary_path() -> String {
