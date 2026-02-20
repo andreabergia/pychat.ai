@@ -660,6 +660,9 @@ impl PythonSession {
             .name()
             .map(|v| v.to_string())
             .unwrap_or_default();
+        if matches!(type_name.as_str(), "memoryview") {
+            return "bytes".to_string();
+        }
         if matches!(type_name.as_str(), "range") {
             return "sequence".to_string();
         }
