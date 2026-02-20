@@ -402,7 +402,7 @@ async fn submit_current_line(
             let Some(provider) = &state.llm else {
                 ui_state.push_timeline_output(
                     OutputKind::SystemError,
-                    "Assistant unavailable: missing GEMINI_API_KEY. Configure it in your shell or .env file (example: GEMINI_API_KEY=your_key).",
+                    "Assistant unavailable: missing GEMINI_API_KEY. Configure it in your shell, .env file, or config file (example: GEMINI_API_KEY=your_key).",
                 );
                 return Ok(());
             };

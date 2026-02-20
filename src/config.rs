@@ -218,8 +218,6 @@ impl AppConfig {
     pub fn load() -> Result<Self> {
         let config_path = discover_config_path()?;
         let file_config = load_file_config(&config_path)?;
-
-        // TODO: we'll get rid of the env.
         dotenvy::dotenv().ok();
 
         let file_api_key = file_config
@@ -242,12 +240,8 @@ impl AppConfig {
 
         Ok(Self {
             gemini_api_key: env_non_empty("GEMINI_API_KEY").or(file_api_key),
-            gemini_model: env_non_empty("GEMINI_MODEL")
-                .or(file_model)
-                .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string()),
-            gemini_base_url: env_non_empty("GEMINI_BASE_URL")
-                .or(file_base_url)
-                .unwrap_or_else(|| DEFAULT_GEMINI_BASE_URL.to_string()),
+            gemini_model: file_model.unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string()),
+            gemini_base_url: file_base_url.unwrap_or_else(|| DEFAULT_GEMINI_BASE_URL.to_string()),
             theme,
         })
     }
@@ -395,7 +389,10 @@ fn config_error(config_path: &Path, key_path: &str, reason: &str) -> anyhow::Err
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, DEFAULT_GEMINI_MODEL, HexColor, ThemeConfig, ThemePreset, ThemeToken};
+    use super::{
+        AppConfig, DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL, HexColor, ThemeConfig,
+        ThemePreset, ThemeToken,
+    };
     use serial_test::serial;
     use std::env;
     use std::fs;
@@ -434,7 +431,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn load_env_overrides_file() {
+    fn load_env_api_key_overrides_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_dir = tmp.path().join("pyaichat");
         fs::create_dir_all(&config_dir).expect("create config dir");
@@ -453,39 +450,36 @@ gemini_base_url = "https://example.com"
             env::set_var("XDG_CONFIG_HOME", tmp.path());
             env::set_var("GEMINI_API_KEY", "os_key");
             env::set_var("GEMINI_MODEL", "os_model");
+            env::set_var("GEMINI_BASE_URL", "https://os.example.com");
         }
 
         let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
         assert_eq!(cfg.gemini_api_key.as_deref(), Some("os_key"));
-        assert_eq!(cfg.gemini_model, "os_model");
+        assert_eq!(cfg.gemini_model, "file_model");
         assert_eq!(cfg.gemini_base_url, "https://example.com");
     }
 
     #[test]
     #[serial]
-    fn load_does_not_override_existing_os_env_with_dotenv() {
+    fn load_reads_api_key_from_dotenv_but_ignores_other_dotenv_vars() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let env_path = tmp.path().join(".env");
         fs::write(
             &env_path,
-            "GEMINI_API_KEY=file_key\nGEMINI_MODEL=file_model\n",
+            "GEMINI_API_KEY=file_key\nGEMINI_MODEL=file_model\nGEMINI_BASE_URL=https://dotenv.example.com\n",
         )
         .expect("write env file");
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", tmp.path());
-        }
 
         reset_vars();
         unsafe {
             env::set_var("XDG_CONFIG_HOME", tmp.path());
-            env::set_var("GEMINI_API_KEY", "os_key");
-            env::set_var("GEMINI_MODEL", "os_model");
         }
 
         let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
 
-        assert_eq!(cfg.gemini_api_key.as_deref(), Some("os_key"));
-        assert_eq!(cfg.gemini_model, "os_model");
+        assert_eq!(cfg.gemini_api_key.as_deref(), Some("file_key"));
+        assert_eq!(cfg.gemini_model, DEFAULT_GEMINI_MODEL);
+        assert_eq!(cfg.gemini_base_url, DEFAULT_GEMINI_BASE_URL);
     }
 
     #[test]

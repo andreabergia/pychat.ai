@@ -59,9 +59,14 @@ Modifier names:
 
 ### Config Precedence
 
-For Gemini settings (`GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_BASE_URL`):
+For `gemini_api_key`:
 
-- defaults < config file < environment
+- config file < environment (`GEMINI_API_KEY`)
+- `.env` is supported for `GEMINI_API_KEY` (shell environment still wins over `.env`)
+
+For `gemini_model` and `gemini_base_url`:
+
+- defaults < config file
 
 Color enablement precedence is unchanged:
 
