@@ -55,6 +55,8 @@ pub struct PythonSession {
     source_counter: AtomicU64,
 }
 
+const INSPECT_EVAL_TIMEOUT_SECONDS: f64 = 1.0;
+
 #[allow(dead_code)]
 impl PythonSession {
     pub fn initialize() -> Result<Self> {
@@ -270,6 +272,92 @@ impl PythonSession {
             .call1((compiled, globals, globals))
     }
 
+    fn eval_compiled_with_timeout<'py>(
+        &self,
+        py: Python<'py>,
+        globals: &Bound<'py, PyDict>,
+        compiled: &Bound<'py, PyAny>,
+        timeout_seconds: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout_context = match self.inspect_timeout_context(py)? {
+            Some(ctx) => ctx,
+            None => return self.eval_compiled(py, globals, compiled),
+        };
+
+        let timeout_handler = PyModule::from_code(
+            py,
+            c"def _pyaichat_timeout_handler(_signum, _frame):
+    raise TimeoutError('inspect timed out after 1.0 seconds')",
+            c"<pyaichat-timeout-handler>",
+            c"_pyaichat_timeout_handler",
+        )?
+        .getattr("_pyaichat_timeout_handler")?;
+
+        timeout_context
+            .signal
+            .getattr("signal")?
+            .call1((&timeout_context.sigalrm, &timeout_handler))?;
+        timeout_context.signal.getattr("setitimer")?.call1((
+            &timeout_context.itimer_real,
+            timeout_seconds,
+            0.0_f64,
+        ))?;
+
+        let eval_result = self.eval_compiled(py, globals, compiled);
+
+        let restore_result = timeout_context.signal.getattr("setitimer")?.call1((
+            &timeout_context.itimer_real,
+            timeout_context.previous_timer.0,
+            timeout_context.previous_timer.1,
+        ));
+        let restore_handler_result = timeout_context
+            .signal
+            .getattr("signal")?
+            .call1((&timeout_context.sigalrm, &timeout_context.previous_handler));
+        restore_result?;
+        restore_handler_result?;
+
+        eval_result
+    }
+
+    fn inspect_timeout_context<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Option<InspectTimeoutContext<'py>>> {
+        let signal = match PyModule::import(py, "signal") {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let threading = match PyModule::import(py, "threading") {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        if !signal.hasattr("SIGALRM")? || !signal.hasattr("ITIMER_REAL")? {
+            return Ok(None);
+        }
+
+        let current_thread = threading.getattr("current_thread")?.call0()?;
+        let main_thread = threading.getattr("main_thread")?.call0()?;
+        if !current_thread.is(&main_thread) {
+            return Ok(None);
+        }
+
+        let sigalrm = signal.getattr("SIGALRM")?;
+        let itimer_real = signal.getattr("ITIMER_REAL")?;
+        let previous_handler = signal.getattr("getsignal")?.call1((&sigalrm,))?;
+        let previous_timer: (f64, f64) = signal
+            .getattr("getitimer")?
+            .call1((&itimer_real,))?
+            .extract()?;
+        Ok(Some(InspectTimeoutContext {
+            signal,
+            sigalrm,
+            itimer_real,
+            previous_handler: previous_handler.unbind(),
+            previous_timer,
+        }))
+    }
+
     fn register_source(&self, py: Python<'_>, source: &str, mode: &str) -> Result<String> {
         let counter = self.source_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let filename = format!("<pyaichat-{mode}-{counter}>");
@@ -439,7 +527,12 @@ impl PythonSession {
     fn inspect_expr(&self, py: Python<'_>, expr: &str) -> CapabilityResult<Value> {
         let globals = self.globals.bind(py);
         let value = match self.compile_source(py, expr, "<inspect>", "eval") {
-            Ok(compiled) => match self.eval_compiled(py, globals, &compiled) {
+            Ok(compiled) => match self.eval_compiled_with_timeout(
+                py,
+                globals,
+                &compiled,
+                INSPECT_EVAL_TIMEOUT_SECONDS,
+            ) {
                 Ok(value) => value,
                 Err(err) => {
                     let exception = self
@@ -993,9 +1086,18 @@ struct CapturedOutput {
     exception: Option<ExceptionInfo>,
 }
 
+struct InspectTimeoutContext<'py> {
+    signal: Bound<'py, PyModule>,
+    sigalrm: Bound<'py, PyAny>,
+    itimer_real: Bound<'py, PyAny>,
+    previous_handler: Py<PyAny>,
+    previous_timer: (f64, f64),
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
 
     use crate::python::{CapabilityError, CapabilityProvider};
 
@@ -1371,6 +1473,37 @@ signal.setitimer(signal.ITIMER_REAL, 0)
 signal.signal(signal.SIGALRM, _prev_alarm_handler)"#,
             )
             .expect("restore alarm state");
+    }
+
+    #[test]
+    fn capability_inspect_times_out_slow_expressions() {
+        let _signal_guard = SIGNAL_TEST_MUTEX.lock().expect("lock signal test mutex");
+        let session = PythonSession::initialize().expect("python session");
+        let timeout_supported = session
+            .eval_expr("hasattr(__import__('signal'), 'SIGALRM') and hasattr(__import__('signal'), 'ITIMER_REAL')")
+            .expect("check signal")
+            .value_repr;
+        let runs_on_main_thread = session
+            .eval_expr(
+                "__import__('threading').current_thread() is __import__('threading').main_thread()",
+            )
+            .expect("check thread")
+            .value_repr;
+        if timeout_supported != "True" || runs_on_main_thread != "True" {
+            return;
+        }
+
+        let started = Instant::now();
+        let err = CapabilityProvider::inspect(&session, "__import__('time').sleep(2)")
+            .expect_err("inspect should timeout");
+        assert!(started.elapsed() < Duration::from_millis(1900));
+        match err {
+            CapabilityError::PythonException(exc) => {
+                assert_eq!(exc.exc_type, "TimeoutError");
+                assert!(exc.message.contains("inspect timed out"));
+            }
+            other => panic!("expected PythonException, got {other:?}"),
+        }
     }
 
     #[test]
