@@ -25,6 +25,7 @@ ENV/
 # Test outputs
 *.log
 test-results/
+test.py
 
 # Local config
 .env
