@@ -319,17 +319,17 @@ impl PythonSession {
             }
         };
 
-        let restore_result = timeout_context.signal.getattr("setitimer")?.call1((
-            &timeout_context.itimer_real,
-            restored_delay,
-            timeout_context.previous_timer.1,
-        ));
         let restore_handler_result = timeout_context
             .signal
             .getattr("signal")?
             .call1((&timeout_context.sigalrm, &timeout_context.previous_handler));
-        restore_result?;
+        let restore_timer_result = timeout_context.signal.getattr("setitimer")?.call1((
+            &timeout_context.itimer_real,
+            restored_delay,
+            timeout_context.previous_timer.1,
+        ));
         restore_handler_result?;
+        restore_timer_result?;
 
         eval_result
     }
