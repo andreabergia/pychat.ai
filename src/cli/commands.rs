@@ -50,6 +50,9 @@ pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
     let command_text = &trimmed[1..];
     let mut parts = command_text.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or("").to_ascii_lowercase();
+    if name.is_empty() {
+        return Err(ParseError::new("empty command. Try /help"));
+    }
     let rest = parts.next().map(str::trim).unwrap_or("");
 
     match name.as_str() {
@@ -300,6 +303,16 @@ mod tests {
                 .expect_err("unknown command")
                 .message(),
             "unknown command '/bogus'. Try /help"
+        );
+    }
+
+    #[test]
+    fn parse_reports_empty_command_when_name_is_missing() {
+        assert_eq!(
+            parse_command("/ help")
+                .expect_err("missing command name")
+                .message(),
+            "empty command. Try /help"
         );
     }
 
