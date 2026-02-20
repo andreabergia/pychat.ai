@@ -92,3 +92,4 @@ Embedded Python Interpreter (persistent session, state, execution)
 - We use conventional commits format
 - Keep the commit messages short and focused
 - Always run tests, formatter, and linter before declaring a task "done"
+- When implementing a plan, split into multiple logical git commits
