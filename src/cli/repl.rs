@@ -6,6 +6,7 @@ use crate::cli::timeline::{
 use crate::config::{ThemeConfig, ThemeToken};
 use crate::llm::gemini::GeminiProvider;
 use crate::python::{InputCompleteness, PythonSession, UserRunResult};
+use crate::trace::SessionTrace;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -34,6 +35,7 @@ pub struct AppState {
     pub llm: Option<GeminiProvider>,
     pub agent_config: AgentConfig,
     pub theme_config: ThemeConfig,
+    pub trace: SessionTrace,
 }
 
 #[derive(Debug, Clone)]
@@ -161,7 +163,10 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    println!("{}", session_closed_message(&state.session_id));
+    println!(
+        "{}",
+        session_closed_message(&state.session_id, state.trace.file_name())
+    );
 
     run_result
 }
@@ -267,7 +272,9 @@ async fn handle_enter(
             submit_current_line(terminal, state, ui_state).await?;
         }
         Err(err) => {
-            ui_state.push_timeline_output(
+            push_output(
+                ui_state,
+                &state.trace,
                 OutputKind::SystemError,
                 &format!("error checking python input completeness: {err}"),
             );
@@ -315,6 +322,10 @@ async fn submit_current_line(
 
     if ui_state.mode == Mode::Python {
         ui_state.push_user_input(&line);
+        state.trace.log_input_python(&line);
+    }
+    if ui_state.mode == Mode::Assistant {
+        state.trace.log_input_assistant(&line);
     }
     ui_state.push_history(&line);
 
@@ -322,19 +333,44 @@ async fn submit_current_line(
         Mode::Python => match state.python.run_user_input(&line) {
             Ok(UserRunResult::Evaluated(result)) => {
                 if !result.stdout.is_empty() {
-                    ui_state.push_timeline_output(OutputKind::PythonStdout, &result.stdout);
+                    push_output(
+                        ui_state,
+                        &state.trace,
+                        OutputKind::PythonStdout,
+                        &result.stdout,
+                    );
                 }
                 if !result.stderr.is_empty() {
-                    ui_state.push_timeline_output(OutputKind::PythonStderr, &result.stderr);
+                    push_output(
+                        ui_state,
+                        &state.trace,
+                        OutputKind::PythonStderr,
+                        &result.stderr,
+                    );
                 }
-                ui_state.push_timeline_output(OutputKind::PythonValue, &result.value_repr);
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonValue,
+                    &result.value_repr,
+                );
             }
             Ok(UserRunResult::Executed(result)) => {
                 if !result.stdout.is_empty() {
-                    ui_state.push_timeline_output(OutputKind::PythonStdout, &result.stdout);
+                    push_output(
+                        ui_state,
+                        &state.trace,
+                        OutputKind::PythonStdout,
+                        &result.stdout,
+                    );
                 }
                 if !result.stderr.is_empty() {
-                    ui_state.push_timeline_output(OutputKind::PythonStderr, &result.stderr);
+                    push_output(
+                        ui_state,
+                        &state.trace,
+                        OutputKind::PythonStderr,
+                        &result.stderr,
+                    );
                 }
             }
             Ok(UserRunResult::Failed {
@@ -343,20 +379,32 @@ async fn submit_current_line(
                 exception,
             }) => {
                 if !stdout.is_empty() {
-                    ui_state.push_timeline_output(OutputKind::PythonStdout, &stdout);
+                    push_output(ui_state, &state.trace, OutputKind::PythonStdout, &stdout);
                 }
                 if !stderr.is_empty() {
-                    ui_state.push_timeline_output(OutputKind::PythonStderr, &stderr);
+                    push_output(ui_state, &state.trace, OutputKind::PythonStderr, &stderr);
                 }
-                ui_state.push_timeline_output(OutputKind::PythonTraceback, &exception.traceback);
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::PythonTraceback,
+                    &exception.traceback,
+                );
             }
             Err(err) => {
-                ui_state.push_timeline_output(OutputKind::SystemError, &format!("error: {err}"));
+                push_output(
+                    ui_state,
+                    &state.trace,
+                    OutputKind::SystemError,
+                    &format!("error: {err}"),
+                );
             }
         },
         Mode::Assistant => {
             let Some(provider) = &state.llm else {
-                ui_state.push_timeline_output(
+                push_output(
+                    ui_state,
+                    &state.trace,
                     OutputKind::SystemError,
                     "Assistant unavailable: missing GEMINI_API_KEY. Configure it in your shell, .env file, or config file (example: GEMINI_API_KEY=your_key).",
                 );
@@ -378,6 +426,10 @@ async fn submit_current_line(
                         args_json,
                         id: _,
                     } => {
+                        state.trace.log_output(
+                            output_trace_kind(OutputKind::AssistantProgressRequest),
+                            &format_tool_request_line(&name, &args_json),
+                        );
                         if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
                             turn.events.push(AssistantStepEvent::ToolRequest {
                                 text: format_tool_request_line(&name, &args_json),
@@ -390,6 +442,10 @@ async fn submit_current_line(
                         response_json,
                         id: _,
                     } => {
+                        state.trace.log_output(
+                            output_trace_kind(OutputKind::AssistantProgressResult),
+                            &format_tool_result_line(&name, &response_json),
+                        );
                         if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
                             turn.events.push(AssistantStepEvent::ToolResult {
                                 text: format_tool_result_line(&name, &response_json),
@@ -410,12 +466,18 @@ async fn submit_current_line(
             .await
             {
                 Ok(answer) => {
+                    state
+                        .trace
+                        .log_output(output_trace_kind(OutputKind::AssistantText), &answer.text);
                     if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
                         turn.state = AssistantTurnState::CompletedText(answer.text);
                     }
                 }
                 Err(err) => {
                     let message = format!("Assistant request failed: {err}");
+                    state
+                        .trace
+                        .log_output(output_trace_kind(OutputKind::SystemError), &message);
                     if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
                         turn.state = AssistantTurnState::CompletedError(message);
                     }
@@ -717,8 +779,30 @@ fn status_right_text(session_id: &str) -> String {
     format!("PyAiChat | Session: {session_id}")
 }
 
-fn session_closed_message(session_id: &str) -> String {
-    format!("PyAiChat session ended.\nSession ID: {session_id}")
+fn session_closed_message(session_id: &str, trace_file_name: &str) -> String {
+    format!("PyAiChat session ended.\nSession ID: {session_id}\nTrace file: {trace_file_name}")
+}
+
+fn push_output(ui_state: &mut UiState, trace: &SessionTrace, kind: OutputKind, text: &str) {
+    ui_state.push_timeline_output(kind, text);
+    trace.log_output(output_trace_kind(kind), text);
+}
+
+fn output_trace_kind(kind: OutputKind) -> &'static str {
+    match kind {
+        OutputKind::UserInputPython => "output.user_input_python",
+        OutputKind::UserInputAssistant => "output.user_input_assistant",
+        OutputKind::PythonValue => "output.python.value",
+        OutputKind::PythonStdout => "output.python.stdout",
+        OutputKind::PythonStderr => "output.python.stderr",
+        OutputKind::PythonTraceback => "output.python.traceback",
+        OutputKind::AssistantText => "output.assistant.text",
+        OutputKind::AssistantWaiting => "output.assistant.waiting",
+        OutputKind::AssistantProgressRequest => "output.assistant.progress.request",
+        OutputKind::AssistantProgressResult => "output.assistant.progress.result",
+        OutputKind::SystemInfo => "output.system.info",
+        OutputKind::SystemError => "output.system.error",
+    }
 }
 
 #[cfg(test)]
@@ -726,9 +810,10 @@ mod tests {
     use super::{
         Mode, append_newline_with_indent, format_tool_error_line, format_tool_request_line,
         format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
-        preview_text, prompt_for, resolve_color_enabled_with, session_closed_message,
-        status_right_text, toggle_mode,
+        output_trace_kind, preview_text, prompt_for, resolve_color_enabled_with,
+        session_closed_message, status_right_text, toggle_mode,
     };
+    use crate::cli::timeline::OutputKind;
     use serde_json::json;
 
     #[test]
@@ -816,8 +901,20 @@ mod tests {
     #[test]
     fn session_closed_message_includes_label_and_id() {
         assert_eq!(
-            session_closed_message("abc123"),
-            "PyAiChat session ended.\nSession ID: abc123"
+            session_closed_message("abc123", "session-abc123.log"),
+            "PyAiChat session ended.\nSession ID: abc123\nTrace file: session-abc123.log"
+        );
+    }
+
+    #[test]
+    fn output_trace_kind_maps_tokens() {
+        assert_eq!(
+            output_trace_kind(OutputKind::PythonStdout),
+            "output.python.stdout"
+        );
+        assert_eq!(
+            output_trace_kind(OutputKind::AssistantProgressResult),
+            "output.assistant.progress.result"
         );
     }
 
