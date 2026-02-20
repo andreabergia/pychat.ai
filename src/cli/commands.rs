@@ -61,8 +61,8 @@ pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
         "inspect" => parse_required_text_arg(rest, "usage: /inspect <expr>")
             .map(|expr| Command::Inspect { expr }),
         "last_error" => expect_no_args(rest, Command::LastError, "usage: /last_error"),
-        "include" => parse_include(rest),
-        "run" => parse_include(rest),
+        "include" => parse_include(rest, "include"),
+        "run" => parse_include(rest, "run"),
         "source" => parse_required_text_arg(rest, "usage: /source <name>")
             .map(|name| Command::Source { name }),
         "steps" => parse_steps(rest),
@@ -111,10 +111,16 @@ fn parse_history(rest: &str) -> Result<Command, ParseError> {
     Ok(Command::History(Some(value)))
 }
 
-fn parse_include(rest: &str) -> Result<Command, ParseError> {
-    let path = parse_required_text_arg(rest, "usage: /include <file.py>")?;
+fn parse_include(rest: &str, command_name: &str) -> Result<Command, ParseError> {
+    if rest.is_empty() {
+        return Err(ParseError::new(format!(
+            "missing file argument. usage: /{command_name} <file.py>"
+        )));
+    }
+
+    let path = rest.to_string();
     if !path.ends_with(".py") {
-        return Err(ParseError::new("usage: /include <file.py>"));
+        return Err(ParseError::new(format!("usage: /{command_name} <file.py>")));
     }
     Ok(Command::Include { path })
 }
@@ -260,6 +266,24 @@ mod tests {
                 .expect_err("invalid include path")
                 .message(),
             "usage: /include <file.py>"
+        );
+        assert_eq!(
+            parse_command("/run not_python.txt")
+                .expect_err("invalid run path")
+                .message(),
+            "usage: /run <file.py>"
+        );
+        assert_eq!(
+            parse_command("/include")
+                .expect_err("missing include argument")
+                .message(),
+            "missing file argument. usage: /include <file.py>"
+        );
+        assert_eq!(
+            parse_command("/run")
+                .expect_err("missing run argument")
+                .message(),
+            "missing file argument. usage: /run <file.py>"
         );
         assert_eq!(
             parse_command("/steps maybe")

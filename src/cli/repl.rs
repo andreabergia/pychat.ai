@@ -23,7 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 use serde_json::Value;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, ErrorKind, IsTerminal};
 use std::path::Path;
 use std::time::Duration;
 
@@ -639,12 +639,12 @@ fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &
     let source = match fs::read_to_string(path_ref) {
         Ok(content) => content,
         Err(err) => {
-            push_output(
-                ui_state,
-                &state.trace,
-                OutputKind::SystemError,
-                &format!("failed to read {}: {err}", path_ref.display()),
-            );
+            let message = if err.kind() == ErrorKind::NotFound {
+                format!("file not found: {}", path_ref.display())
+            } else {
+                format!("failed to read {}: {err}", path_ref.display())
+            };
+            push_output(ui_state, &state.trace, OutputKind::SystemError, &message);
             return;
         }
     };
@@ -1346,7 +1346,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("failed to read does_not_exist.py")),
+                .any(|line| line == "file not found: does_not_exist.py"),
             "missing file error should be visible"
         );
     }
@@ -1363,6 +1363,23 @@ mod tests {
         assert!(
             lines.iter().any(|line| line == "usage: /include <file.py>"),
             "usage text should be shown"
+        );
+    }
+
+    #[test]
+    fn run_without_argument_reports_missing_file_argument() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("run-missing-arg", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/run");
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "missing file argument. usage: /run <file.py>"),
+            "missing file argument text should be shown"
         );
     }
 
