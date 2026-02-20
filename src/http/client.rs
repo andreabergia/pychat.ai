@@ -1,6 +1,7 @@
 use super::debug::{
     HttpDebugConfig, redact_header_value, redact_text_body, redact_url, truncate_for_log,
 };
+use crate::trace::SessionTrace;
 use reqwest::Client;
 use serde::Serialize;
 use std::fmt;
@@ -13,6 +14,7 @@ pub struct HttpClient {
     inner: Client,
     debug: HttpDebugConfig,
     sink: LogSink,
+    trace: Option<SessionTrace>,
 }
 
 #[derive(Clone)]
@@ -36,7 +38,13 @@ impl HttpClient {
             inner,
             debug,
             sink: LogSink::Stderr,
+            trace: None,
         }
+    }
+
+    pub fn with_trace(mut self, trace: SessionTrace) -> Self {
+        self.trace = Some(trace);
+        self
     }
 
     pub async fn post_json<T: Serialize + ?Sized>(
@@ -50,13 +58,32 @@ impl HttpClient {
 
         let request = self.inner.post(url).query(query).json(payload).build()?;
         self.log_request(&request, &body_json);
+        if let Some(trace) = &self.trace {
+            trace.log_http_request(
+                request.method().as_str(),
+                request.url().as_str(),
+                request.headers(),
+                &body_json,
+            );
+        }
 
-        let response = self.inner.execute(request).await?;
+        let response = match self.inner.execute(request).await {
+            Ok(response) => response,
+            Err(err) => {
+                if let Some(trace) = &self.trace {
+                    trace.log_http_error(&err.to_string());
+                }
+                return Err(err);
+            }
+        };
         let status = response.status().as_u16();
         let headers = response.headers().clone();
         let body = response.text().await?;
 
         self.log_response(status, &headers, &body);
+        if let Some(trace) = &self.trace {
+            trace.log_http_response(status, &headers, &body);
+        }
 
         Ok(HttpResponseData { status, body })
     }
@@ -106,6 +133,7 @@ impl HttpClient {
             inner,
             debug,
             sink: LogSink::Buffer(Arc::clone(&buffer)),
+            trace: None,
         };
         (client, buffer)
     }
@@ -178,10 +206,13 @@ pub struct HttpResponseData {
 mod tests {
     use super::{HttpClient, HttpResponseData, request_log_lines, response_log_lines};
     use crate::http::debug::HttpDebugConfig;
+    use crate::trace::SessionTrace;
     use reqwest::Client;
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
     use reqwest::{Method, Url};
     use serde_json::json;
+    use std::fs;
+    use tempfile::tempdir;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -256,6 +287,45 @@ mod tests {
             .expect("request should succeed");
 
         assert!(logs.lock().expect("logs lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_json_writes_full_raw_http_trace_when_trace_enabled() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/test"))
+            .and(query_param("key", "super-secret"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-api-key", "response-secret")
+                    .set_body_json(json!({"api_key":"response-secret","ok":true})),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().expect("tempdir");
+        let trace = SessionTrace::create_in_temp_dir("test-session", dir.path()).expect("trace");
+        let trace_file = dir.path().join(trace.file_name());
+
+        let client =
+            HttpClient::new(Client::new(), HttpDebugConfig::disabled()).with_trace(trace.clone());
+
+        let response = client
+            .post_json(
+                &format!("{}/v1/test", server.uri()),
+                &[("key", "super-secret")],
+                &json!({"token":"request-secret"}),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status, 200);
+        let trace_text = fs::read_to_string(trace_file).expect("read trace file");
+
+        assert!(trace_text.contains("key=super-secret"));
+        assert!(trace_text.contains("\"token\":\"request-secret\""));
+        assert!(trace_text.contains("x-api-key: response-secret"));
+        assert!(trace_text.contains("\"api_key\":\"response-secret\""));
     }
 
     #[test]
