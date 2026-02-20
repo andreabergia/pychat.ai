@@ -265,9 +265,8 @@ fn discover_config_path() -> Result<PathBuf> {
             .join(CONFIG_FILE_NAME));
     }
 
-    let home = dirs::home_dir().ok_or_else(|| {
-        anyhow!("Failed to resolve config path: HOME directory is unavailable")
-    })?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| anyhow!("Failed to resolve config path: HOME directory is unavailable"))?;
 
     Ok(home
         .join(".config")
@@ -287,12 +286,9 @@ fn load_file_config(config_path: &Path) -> Result<Option<RawFileConfig>> {
         )
     })?;
 
-    toml::from_str(&config_text).map(Some).map_err(|err| {
-        anyhow!(
-            "Failed to load config {}: {err}",
-            config_path.display()
-        )
-    })
+    toml::from_str(&config_text)
+        .map(Some)
+        .map_err(|err| anyhow!("Failed to load config {}: {err}", config_path.display()))
 }
 
 fn validate_theme(raw_theme: Option<&RawThemeConfig>, config_path: &Path) -> Result<ThemeConfig> {
@@ -303,19 +299,14 @@ fn validate_theme(raw_theme: Option<&RawThemeConfig>, config_path: &Path) -> Res
     let mut config = ThemeConfig::default();
 
     if let Some(name) = &theme.name {
-        config.preset = ThemePreset::from_str(name).map_err(|reason| {
-            config_error(config_path, "theme.name", &reason)
-        })?;
+        config.preset = ThemePreset::from_str(name)
+            .map_err(|reason| config_error(config_path, "theme.name", &reason))?;
     }
 
     if let Some(styles) = &theme.styles {
         for (token_name, raw_style) in styles {
             let token = ThemeToken::from_str(token_name).map_err(|reason| {
-                config_error(
-                    config_path,
-                    &format!("theme.styles.{token_name}"),
-                    &reason,
-                )
+                config_error(config_path, &format!("theme.styles.{token_name}"), &reason)
             })?;
 
             let fg = parse_color(raw_style.fg.as_deref(), config_path, token_name, "fg")?;
@@ -323,7 +314,9 @@ fn validate_theme(raw_theme: Option<&RawThemeConfig>, config_path: &Path) -> Res
             let modifiers =
                 parse_modifiers(raw_style.modifiers.as_deref(), config_path, token_name)?;
 
-            config.styles.insert(token, StyleOverride { fg, bg, modifiers });
+            config
+                .styles
+                .insert(token, StyleOverride { fg, bg, modifiers });
         }
     }
 
@@ -340,15 +333,13 @@ fn parse_color(
         return Ok(None);
     };
 
-    HexColor::from_str(value)
-        .map(Some)
-        .map_err(|reason| {
-            config_error(
-                config_path,
-                &format!("theme.styles.{token_name}.{field_name}"),
-                &reason,
-            )
-        })
+    HexColor::from_str(value).map(Some).map_err(|reason| {
+        config_error(
+            config_path,
+            &format!("theme.styles.{token_name}.{field_name}"),
+            &reason,
+        )
+    })
 }
 
 fn parse_modifiers(
@@ -503,8 +494,11 @@ gemini_base_url = "https://example.com"
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_dir = tmp.path().join("pyaichat");
         fs::create_dir_all(&config_dir).expect("create config dir");
-        fs::write(config_dir.join("config.toml"), r#"gemini_model = "from_file""#)
-            .expect("write config");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"gemini_model = "from_file""#,
+        )
+        .expect("write config");
 
         reset_vars();
         unsafe {
@@ -543,7 +537,9 @@ gemini_base_url = "https://example.com"
             env::set_var("XDG_CONFIG_HOME", tmp.path());
         }
 
-        let err = with_cwd(tmp.path(), || AppConfig::load().expect_err("load should fail"));
+        let err = with_cwd(tmp.path(), || {
+            AppConfig::load().expect_err("load should fail")
+        });
         assert!(err.to_string().contains("Failed to load config"));
         assert!(err.to_string().contains("unknown field"));
     }
@@ -568,7 +564,9 @@ fg = "#ffffff"
             env::set_var("XDG_CONFIG_HOME", tmp.path());
         }
 
-        let err = with_cwd(tmp.path(), || AppConfig::load().expect_err("load should fail"));
+        let err = with_cwd(tmp.path(), || {
+            AppConfig::load().expect_err("load should fail")
+        });
         assert!(
             err.to_string()
                 .contains("theme.styles.unknown_token: unknown token 'unknown_token'")
@@ -595,7 +593,9 @@ fg = "red"
             env::set_var("XDG_CONFIG_HOME", tmp.path());
         }
 
-        let err = with_cwd(tmp.path(), || AppConfig::load().expect_err("load should fail"));
+        let err = with_cwd(tmp.path(), || {
+            AppConfig::load().expect_err("load should fail")
+        });
         assert!(
             err.to_string()
                 .contains("theme.styles.python_prompt.fg: invalid hex color")
@@ -622,7 +622,9 @@ modifiers = ["sparkly"]
             env::set_var("XDG_CONFIG_HOME", tmp.path());
         }
 
-        let err = with_cwd(tmp.path(), || AppConfig::load().expect_err("load should fail"));
+        let err = with_cwd(tmp.path(), || {
+            AppConfig::load().expect_err("load should fail")
+        });
         assert!(
             err.to_string()
                 .contains("theme.styles.python_prompt.modifiers: unknown modifier 'sparkly'")

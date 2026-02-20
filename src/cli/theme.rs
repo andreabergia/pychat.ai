@@ -1,6 +1,5 @@
 use crate::config::{
-    HexColor, StyleOverride, ThemeConfig as UserThemeConfig, ThemeModifier, ThemePreset,
-    ThemeToken,
+    HexColor, StyleOverride, ThemeConfig as UserThemeConfig, ThemeModifier, ThemePreset, ThemeToken,
 };
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashMap;
@@ -145,11 +144,15 @@ fn high_contrast_preset_style(token: ThemeToken) -> Style {
             .fg(Color::Rgb(220, 220, 220))
             .add_modifier(Modifier::ITALIC),
         ThemeToken::AssistantProgressResult => Style::default().fg(Color::Rgb(220, 220, 220)),
-        ThemeToken::SystemInfo | ThemeToken::Status => Style::default().fg(Color::Rgb(173, 216, 230)),
+        ThemeToken::SystemInfo | ThemeToken::Status => {
+            Style::default().fg(Color::Rgb(173, 216, 230))
+        }
         ThemeToken::SystemError => Style::default()
             .fg(Color::Rgb(255, 64, 64))
             .add_modifier(Modifier::BOLD),
-        ThemeToken::InputBlock => Style::default().bg(Color::Rgb(0, 0, 0)).fg(Color::Rgb(255, 255, 255)),
+        ThemeToken::InputBlock => Style::default()
+            .bg(Color::Rgb(0, 0, 0))
+            .fg(Color::Rgb(255, 255, 255)),
     }
 }
 
@@ -190,7 +193,9 @@ fn modifiers_to_modifier(modifiers: &[ThemeModifier]) -> Modifier {
     modifiers
         .iter()
         .copied()
-        .fold(Modifier::empty(), |acc, modifier| acc | modifier_to_ratatui(modifier))
+        .fold(Modifier::empty(), |acc, modifier| {
+            acc | modifier_to_ratatui(modifier)
+        })
 }
 
 fn modifier_to_ratatui(modifier: ThemeModifier) -> Modifier {
@@ -226,8 +231,16 @@ mod tests {
     #[test]
     fn disabled_theme_only_keeps_prompt_bold() {
         let theme = Theme::new(false);
-        assert!(theme.style(ThemeToken::PythonPrompt).add_modifier.contains(ratatui::style::Modifier::BOLD));
-        assert_eq!(theme.style(ThemeToken::SystemInfo), ratatui::style::Style::default());
+        assert!(
+            theme
+                .style(ThemeToken::PythonPrompt)
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert_eq!(
+            theme.style(ThemeToken::SystemInfo),
+            ratatui::style::Style::default()
+        );
     }
 
     #[test]
@@ -239,11 +252,7 @@ mod tests {
         config.styles.insert(
             ThemeToken::PythonPrompt,
             StyleOverride {
-                fg: Some(HexColor {
-                    r: 1,
-                    g: 2,
-                    b: 3,
-                }),
+                fg: Some(HexColor { r: 1, g: 2, b: 3 }),
                 bg: None,
                 modifiers: None,
             },

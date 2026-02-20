@@ -506,7 +506,10 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     let mut rendered_lines = Vec::with_capacity(input_lines.len());
     for (idx, line) in input_lines.into_iter().enumerate() {
         let prompt_span = if idx == 0 {
-            Span::styled(prompt, ui_state.theme.style(prompt_token_for(ui_state.mode)))
+            Span::styled(
+                prompt,
+                ui_state.theme.style(prompt_token_for(ui_state.mode)),
+            )
         } else {
             Span::styled(
                 prompt_padding.clone(),
@@ -556,7 +559,9 @@ fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
     if ui_state.timeline.is_empty() {
         return vec![Line::from(Span::styled(
             "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
-            ui_state.theme.style(output_token_for(OutputKind::SystemInfo)),
+            ui_state
+                .theme
+                .style(output_token_for(OutputKind::SystemInfo)),
         ))];
     }
 
@@ -567,7 +572,9 @@ fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
                 Span::styled("py> ", ui_state.theme.style(ThemeToken::PythonPrompt)),
                 Span::styled(
                     text.clone(),
-                    ui_state.theme.style(output_token_for(OutputKind::UserInputPython)),
+                    ui_state
+                        .theme
+                        .style(output_token_for(OutputKind::UserInputPython)),
                 ),
             ])),
             TimelineEntry::OutputLine { kind, text } => lines.push(Line::from(Span::styled(
@@ -879,14 +886,13 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::cli::theme::Theme;
     use super::{
-        AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode,
-        append_newline_with_indent, format_tool_error_line, format_tool_request_line,
-        format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
-        preview_text, prompt_for, render_assistant_turn_lines, resolve_color_enabled_with,
-        split_output_lines, toggle_mode,
+        AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode, append_newline_with_indent,
+        format_tool_error_line, format_tool_request_line, format_tool_result_line,
+        input_cursor_position, last_line_indent, mode_status_text, preview_text, prompt_for,
+        render_assistant_turn_lines, resolve_color_enabled_with, split_output_lines, toggle_mode,
     };
+    use crate::cli::theme::Theme;
     use serde_json::json;
 
     fn completed_turn_fixture() -> AssistantTurn {
