@@ -854,7 +854,18 @@ impl PythonSession {
                 let item_repr = self.safe_repr(_py, &item).0;
                 items.push(Value::String(format!("{key_repr}: {item_repr}")));
             }
-        } else if let Ok(iter) = value.try_iter() {
+        } else if kind == "sequence" || kind == "set" {
+            let type_name = value
+                .get_type()
+                .name()
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            if !matches!(type_name.as_str(), "list" | "tuple" | "range" | "set" | "frozenset") {
+                return None;
+            }
+            let Ok(iter) = value.try_iter() else {
+                return None;
+            };
             for item in iter.flatten() {
                 if items.len() >= super::capabilities::INSPECT_SAMPLE_MAX_ITEMS {
                     break;
@@ -1506,6 +1517,25 @@ mod tests {
 
         let inspect = CapabilityProvider::inspect(&session, "g").expect("inspect");
         assert_eq!(inspect.value["kind"], "generator");
+    }
+
+    #[test]
+    fn capability_inspect_does_not_iterate_custom_iterables_for_sampling() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code(
+                "class CustomIterable:\n    iter_calls = 0\n    def __iter__(self):\n        CustomIterable.iter_calls += 1\n        return iter([1, 2, 3])\nobj = CustomIterable()",
+            )
+            .expect("seed custom iterable");
+
+        let inspect = CapabilityProvider::inspect(&session, "obj").expect("inspect");
+        assert_eq!(inspect.value["kind"], "object");
+        assert!(inspect.value.get("sample").is_none());
+
+        let iter_calls = session
+            .eval_expr("CustomIterable.iter_calls")
+            .expect("read iter call count");
+        assert_eq!(iter_calls.value_repr, "0");
     }
 
     #[test]
