@@ -56,6 +56,7 @@ pub struct PythonSession {
 }
 
 const INSPECT_EVAL_TIMEOUT_SECONDS: f64 = 1.0;
+const MIN_TIMER_DELAY_SECONDS: f64 = 1e-6;
 
 #[allow(dead_code)]
 impl PythonSession {
@@ -303,12 +304,24 @@ impl PythonSession {
             timeout_seconds,
             0.0_f64,
         ))?;
+        let inspect_started_at = std::time::Instant::now();
 
         let eval_result = self.eval_compiled(py, globals, compiled);
+        let inspect_elapsed = inspect_started_at.elapsed().as_secs_f64();
+        let restored_delay = if timeout_context.previous_timer.0 <= 0.0 {
+            0.0_f64
+        } else {
+            let remaining = timeout_context.previous_timer.0 - inspect_elapsed;
+            if remaining <= 0.0 {
+                MIN_TIMER_DELAY_SECONDS
+            } else {
+                remaining
+            }
+        };
 
         let restore_result = timeout_context.signal.getattr("setitimer")?.call1((
             &timeout_context.itimer_real,
-            timeout_context.previous_timer.0,
+            restored_delay,
             timeout_context.previous_timer.1,
         ));
         let restore_handler_result = timeout_context
@@ -1533,10 +1546,11 @@ signal.setitimer(signal.ITIMER_REAL, 0.4)"#,
             )
             .expect("seed alarm state");
 
-        CapabilityProvider::inspect(&session, "42").expect("inspect");
+        CapabilityProvider::inspect(&session, "__import__('time').sleep(0.25)")
+            .expect("inspect with delay");
         let check = session
             .eval_expr(
-                "(__import__('signal').getsignal(__import__('signal').SIGALRM) is _test_alarm_handler) and (__import__('signal').getitimer(__import__('signal').ITIMER_REAL)[0] > 0.2)",
+                "(__import__('signal').getsignal(__import__('signal').SIGALRM) is _test_alarm_handler) and (0.01 < __import__('signal').getitimer(__import__('signal').ITIMER_REAL)[0] < 0.3)",
             )
             .expect("check restored alarm state");
         assert_eq!(check.value_repr, "True");
