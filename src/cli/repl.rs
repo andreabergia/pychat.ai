@@ -11,14 +11,17 @@ use crate::python::{
 };
 use crate::trace::SessionTrace;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 use serde_json::Value;
@@ -26,6 +29,15 @@ use std::fs;
 use std::io::{self, ErrorKind, IsTerminal};
 use std::path::Path;
 use std::time::Duration;
+
+const TIMELINE_SCROLL_STEP: usize = 3;
+
+#[derive(Debug, Clone, Copy)]
+struct UiLayout {
+    timeline: Rect,
+    input: Rect,
+    status: Rect,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -52,6 +64,7 @@ struct UiState {
     show_assistant_steps: bool,
     history: Vec<String>,
     history_index: Option<usize>,
+    timeline_scroll: usize,
     timeline: Timeline,
     should_quit: bool,
     theme: Theme,
@@ -72,6 +85,7 @@ impl UiState {
             show_assistant_steps: true,
             history: Vec::new(),
             history_index: None,
+            timeline_scroll: 0,
             timeline: Timeline::new(),
             should_quit: false,
             theme: Theme::from_config(color_enabled, theme_config),
@@ -146,6 +160,18 @@ impl UiState {
             None => {}
         }
     }
+
+    fn scroll_timeline_up(&mut self, lines: usize, max_scroll: usize) {
+        self.timeline_scroll = self.timeline_scroll.saturating_add(lines).min(max_scroll);
+    }
+
+    fn scroll_timeline_down(&mut self, lines: usize) {
+        self.timeline_scroll = self.timeline_scroll.saturating_sub(lines);
+    }
+
+    fn timeline_scroll_offset(&self, max_scroll: usize) -> usize {
+        self.timeline_scroll.min(max_scroll)
+    }
 }
 
 pub async fn run_repl(state: &mut AppState) -> Result<()> {
@@ -159,14 +185,18 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let run_result = run_tui_loop(&mut terminal, state, &mut ui_state).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     println!("{}", session_closed_message(state.trace.file_path()));
 
@@ -191,13 +221,47 @@ async fn run_tui_loop(
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
-            handle_key_event(terminal, state, ui_state, key).await?;
+        match event::read()? {
+            Event::Key(key) => handle_key_event(terminal, state, ui_state, key).await?,
+            Event::Mouse(mouse) => {
+                let size = terminal.size()?;
+                let area = Rect::new(0, 0, size.width, size.height);
+                let layout = ui_layout(area, ui_state.current_input());
+                let line_count = ui_state
+                    .timeline
+                    .render_lines(&ui_state.theme, ui_state.show_assistant_steps)
+                    .len();
+                let max_scroll =
+                    timeline_max_scroll(line_count, usize::from(layout.timeline.height));
+                handle_mouse_event(ui_state, mouse, layout.timeline, max_scroll);
+            }
+            _ => {}
         }
     }
 
     state.mode = ui_state.mode;
     Ok(())
+}
+
+fn handle_mouse_event(
+    ui_state: &mut UiState,
+    mouse: MouseEvent,
+    timeline_area: Rect,
+    max_timeline_scroll: usize,
+) {
+    if !area_contains_point(timeline_area, mouse.column, mouse.row) {
+        return;
+    }
+
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            ui_state.scroll_timeline_up(TIMELINE_SCROLL_STEP, max_timeline_scroll);
+        }
+        MouseEventKind::ScrollDown => {
+            ui_state.scroll_timeline_down(TIMELINE_SCROLL_STEP);
+        }
+        _ => {}
+    }
 }
 
 async fn handle_key_event(
@@ -788,11 +852,8 @@ fn format_history_output(history: &[String], limit: Option<usize>) -> String {
         .join("\n")
 }
 
-fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
-    let command_input = is_command_line(ui_state.current_input());
-    let prompt = prompt_for(ui_state.mode, command_input);
-    let input_lines = render_input_lines(ui_state.current_input());
-    let input_line_count = input_lines.len().max(1);
+fn ui_layout(area: Rect, current_input: &str) -> UiLayout {
+    let input_line_count = render_input_lines(current_input).len().max(1);
     let max_input_lines = 6usize;
     let input_visible_lines = input_line_count.min(max_input_lines);
     let input_height = u16::try_from(input_visible_lines.saturating_add(2)).unwrap_or(u16::MAX);
@@ -804,21 +865,63 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
             Constraint::Length(input_height),
             Constraint::Length(1),
         ])
-        .split(frame.area());
+        .split(area);
+
+    UiLayout {
+        timeline: chunks[0],
+        input: chunks[1],
+        status: chunks[2],
+    }
+}
+
+fn timeline_max_scroll(total_lines: usize, visible_lines: usize) -> usize {
+    total_lines.saturating_sub(visible_lines)
+}
+
+fn timeline_paragraph_scroll(
+    total_lines: usize,
+    visible_lines: usize,
+    timeline_scroll: usize,
+) -> u16 {
+    let max_scroll = timeline_max_scroll(total_lines, visible_lines);
+    let scroll = max_scroll.saturating_sub(timeline_scroll.min(max_scroll));
+    u16::try_from(scroll).unwrap_or(u16::MAX)
+}
+
+fn area_contains_point(area: Rect, column: u16, row: u16) -> bool {
+    if area.width == 0 || area.height == 0 {
+        return false;
+    }
+    let in_x = column >= area.x && column < area.x.saturating_add(area.width);
+    let in_y = row >= area.y && row < area.y.saturating_add(area.height);
+    in_x && in_y
+}
+
+fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
+    let command_input = is_command_line(ui_state.current_input());
+    let prompt = prompt_for(ui_state.mode, command_input);
+    let input_lines = render_input_lines(ui_state.current_input());
+    let input_line_count = input_lines.len().max(1);
+    let max_input_lines = 6usize;
+    let input_visible_lines = input_line_count.min(max_input_lines);
+    let layout = ui_layout(frame.area(), ui_state.current_input());
 
     let lines = ui_state
         .timeline
         .render_lines(&ui_state.theme, ui_state.show_assistant_steps);
 
-    let visible_lines = usize::from(chunks[0].height);
-    let scroll = lines.len().saturating_sub(visible_lines);
-    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+    let visible_lines = usize::from(layout.timeline.height);
+    let scroll = timeline_paragraph_scroll(
+        lines.len(),
+        visible_lines,
+        ui_state.timeline_scroll_offset(timeline_max_scroll(lines.len(), visible_lines)),
+    );
 
     let output = Paragraph::new(lines)
         .block(Block::default().padding(Padding::new(1, 1, 0, 0)))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    frame.render_widget(output, chunks[0]);
+    frame.render_widget(output, layout.timeline);
 
     let input_scroll =
         u16::try_from(input_line_count.saturating_sub(input_visible_lines)).unwrap_or(u16::MAX);
@@ -854,25 +957,27 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         )
         .wrap(Wrap { trim: false })
         .scroll((input_scroll, 0));
-    frame.render_widget(input_widget, chunks[1]);
+    frame.render_widget(input_widget, layout.input);
 
     let mode_text = mode_status_text(ui_state.mode, ui_state.show_assistant_steps);
     let status_left = Paragraph::new(mode_text).style(ui_state.theme.style(ThemeToken::Status));
-    frame.render_widget(status_left, chunks[2]);
+    frame.render_widget(status_left, layout.status);
 
     let status_right = Paragraph::new(status_right_text(&ui_state.session_id))
         .style(ui_state.theme.style(ThemeToken::Status))
         .alignment(ratatui::layout::Alignment::Right);
-    frame.render_widget(status_right, chunks[2]);
+    frame.render_widget(status_right, layout.status);
 
     let (cursor_row, cursor_col) = input_cursor_position(ui_state.current_input());
     let cursor_row = cursor_row.saturating_sub(usize::from(input_scroll));
-    let cursor_x = chunks[1]
+    let cursor_x = layout
+        .input
         .x
         .saturating_add(1)
         .saturating_add(u16::try_from(prompt.chars().count()).unwrap_or(u16::MAX))
         .saturating_add(u16::try_from(cursor_col).unwrap_or(u16::MAX));
-    let cursor_y = chunks[1]
+    let cursor_y = layout
+        .input
         .y
         .saturating_add(1)
         .saturating_add(u16::try_from(cursor_row).unwrap_or(u16::MAX));
@@ -1123,17 +1228,20 @@ fn output_trace_kind(kind: OutputKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, Mode, UiState, append_newline_with_indent, execute_command,
+        AppState, Mode, UiState, append_newline_with_indent, area_contains_point, execute_command,
         format_history_output, format_tool_error_line, format_tool_request_line,
-        format_tool_result_line, input_cursor_position, is_safe_source_target, last_line_indent,
-        mode_status_text, output_trace_kind, preview_text, prompt_for, resolve_color_enabled_with,
-        session_closed_message, status_right_text, toggle_mode,
+        format_tool_result_line, handle_mouse_event, input_cursor_position, is_safe_source_target,
+        last_line_indent, mode_status_text, output_trace_kind, preview_text, prompt_for,
+        resolve_color_enabled_with, session_closed_message, status_right_text, timeline_max_scroll,
+        timeline_paragraph_scroll, toggle_mode,
     };
     use crate::agent::AgentConfig;
     use crate::cli::timeline::OutputKind;
     use crate::config::ThemeConfig;
     use crate::python::PythonSession;
     use crate::trace::SessionTrace;
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1300,6 +1408,124 @@ mod tests {
             format_history_output(&history, Some(2)),
             "   3: x + 1\n   4: /history 2"
         );
+    }
+
+    #[test]
+    fn timeline_paragraph_scroll_follows_manual_offset() {
+        assert_eq!(timeline_paragraph_scroll(20, 5, 0), 15);
+        assert_eq!(timeline_paragraph_scroll(20, 5, 3), 12);
+        assert_eq!(timeline_paragraph_scroll(20, 5, 99), 0);
+    }
+
+    #[test]
+    fn area_contains_point_matches_rect_bounds() {
+        let area = Rect::new(10, 5, 3, 2);
+        assert!(area_contains_point(area, 10, 5));
+        assert!(area_contains_point(area, 12, 6));
+        assert!(!area_contains_point(area, 13, 6));
+        assert!(!area_contains_point(area, 12, 7));
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_timeline_with_clamp() {
+        let mut ui_state = test_ui_state();
+        let timeline_area = Rect::new(0, 0, 80, 8);
+        let max_scroll = 7usize;
+
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollUp, 2, 2),
+            timeline_area,
+            max_scroll,
+        );
+        assert_eq!(ui_state.timeline_scroll, 3);
+
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollUp, 2, 2),
+            timeline_area,
+            max_scroll,
+        );
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollUp, 2, 2),
+            timeline_area,
+            max_scroll,
+        );
+        assert_eq!(ui_state.timeline_scroll, max_scroll);
+
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollDown, 2, 2),
+            timeline_area,
+            max_scroll,
+        );
+        assert_eq!(ui_state.timeline_scroll, 4);
+
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollDown, 2, 2),
+            timeline_area,
+            max_scroll,
+        );
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollDown, 2, 2),
+            timeline_area,
+            max_scroll,
+        );
+        assert_eq!(ui_state.timeline_scroll, 0);
+    }
+
+    #[test]
+    fn mouse_wheel_outside_timeline_is_ignored() {
+        let mut ui_state = test_ui_state();
+        ui_state.timeline_scroll = 4;
+        let timeline_area = Rect::new(0, 0, 80, 8);
+
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollUp, 2, 10),
+            timeline_area,
+            20,
+        );
+
+        assert_eq!(ui_state.timeline_scroll, 4);
+    }
+
+    #[test]
+    fn mouse_wheel_does_not_change_history_selection() {
+        let mut ui_state = test_ui_state();
+        ui_state.history = vec!["x = 1".to_string(), "x + 1".to_string()];
+        ui_state.history_index = Some(1);
+        ui_state.python_input = "x + 1".to_string();
+        let timeline_area = Rect::new(0, 0, 80, 8);
+
+        handle_mouse_event(
+            &mut ui_state,
+            mouse_event(MouseEventKind::ScrollUp, 3, 3),
+            timeline_area,
+            20,
+        );
+
+        assert_eq!(ui_state.history_index, Some(1));
+        assert_eq!(ui_state.python_input, "x + 1");
+    }
+
+    #[test]
+    fn timeline_manual_scroll_is_preserved_when_new_output_arrives() {
+        let mut ui_state = test_ui_state();
+        ui_state.timeline_scroll = 5;
+        ui_state.push_timeline_output(OutputKind::PythonStdout, "hello");
+        ui_state.push_timeline_output(OutputKind::PythonStdout, "world");
+        assert_eq!(ui_state.timeline_scroll, 5);
+    }
+
+    #[test]
+    fn timeline_max_scroll_matches_content_and_viewport() {
+        assert_eq!(timeline_max_scroll(0, 10), 0);
+        assert_eq!(timeline_max_scroll(5, 10), 0);
+        assert_eq!(timeline_max_scroll(11, 10), 1);
     }
 
     #[test]
@@ -1478,5 +1704,14 @@ mod tests {
             .into_iter()
             .map(|line| line.to_string())
             .collect()
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 }
