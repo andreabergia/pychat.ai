@@ -712,6 +712,16 @@ fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &
 }
 
 fn execute_source_command(state: &mut AppState, ui_state: &mut UiState, name: &str) {
+    if !is_safe_source_target(name) {
+        push_output(
+            ui_state,
+            &state.trace,
+            OutputKind::SystemError,
+            "usage: /show_source <name>",
+        );
+        return;
+    }
+
     let code = format!("print(__import__('inspect').getsource({name}), end='')");
     match state.python.exec_code(&code) {
         Ok(result) => {
@@ -741,6 +751,26 @@ fn execute_source_command(state: &mut AppState, ui_state: &mut UiState, name: &s
             );
         }
     }
+}
+
+fn is_safe_source_target(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    name.split('.').all(is_ascii_identifier)
+}
+
+fn is_ascii_identifier(segment: &str) -> bool {
+    let mut chars = segment.bytes();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() && first != b'_' {
+        return false;
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
 }
 
 fn format_history_output(history: &[String], limit: Option<usize>) -> String {
@@ -1095,8 +1125,8 @@ mod tests {
     use super::{
         AppState, Mode, UiState, append_newline_with_indent, execute_command,
         format_history_output, format_tool_error_line, format_tool_request_line,
-        format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
-        output_trace_kind, preview_text, prompt_for, resolve_color_enabled_with,
+        format_tool_result_line, input_cursor_position, is_safe_source_target, last_line_indent,
+        mode_status_text, output_trace_kind, preview_text, prompt_for, resolve_color_enabled_with,
         session_closed_message, status_right_text, toggle_mode,
     };
     use crate::agent::AgentConfig;
@@ -1273,6 +1303,16 @@ mod tests {
     }
 
     #[test]
+    fn source_target_validation_allows_identifier_paths_only() {
+        assert!(is_safe_source_target("my_fn"));
+        assert!(is_safe_source_target("module.ClassName"));
+        assert!(!is_safe_source_target(""));
+        assert!(!is_safe_source_target("1name"));
+        assert!(!is_safe_source_target("obj.method()"));
+        assert!(!is_safe_source_target("__import__('os').system"));
+    }
+
+    #[test]
     fn execute_command_mode_and_steps_updates_ui_state() {
         let dir = tempdir().expect("tempdir");
         let mut state = test_app_state("mode-steps", dir.path());
@@ -1380,6 +1420,33 @@ mod tests {
                 .iter()
                 .any(|line| line == "missing file argument. usage: /run <file.py>"),
             "missing file argument text should be shown"
+        );
+    }
+
+    #[test]
+    fn show_source_rejects_unsafe_expression() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("source-injection", dir.path());
+        let mut ui_state = test_ui_state();
+
+        let marker = dir.path().join("marker.txt");
+        let command = format!(
+            "/show_source __import__('pathlib').Path({:?}).write_text('x')",
+            marker
+        );
+
+        execute_command(&mut state, &mut ui_state, &command);
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "usage: /show_source <name>"),
+            "unsafe source expression should be rejected"
+        );
+        assert!(
+            !marker.exists(),
+            "unsafe expression should not execute side effects"
         );
     }
 
