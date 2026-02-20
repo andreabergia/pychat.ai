@@ -636,7 +636,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
 fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
     if ui_state.timeline.is_empty() {
         return vec![Line::from(Span::styled(
-            "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles assistant steps.",
+            "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
             ui_state.theme.output_style(OutputKind::SystemInfo),
         ))];
     }
@@ -857,7 +857,7 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
         Mode::Assistant => "Mode: AI Assistant",
     };
     let steps_text = if show_assistant_steps { "On" } else { "Off" };
-    format!("{mode_text} | Steps: {steps_text} (Ctrl-T)")
+    format!("{mode_text} | Show agent thinking: {steps_text} (Ctrl-T)")
 }
 
 #[cfg(test)]
@@ -968,11 +968,11 @@ mod tests {
     fn mode_status_text_includes_step_toggle_value() {
         assert_eq!(
             mode_status_text(Mode::Python, true),
-            "Mode: Python | Steps: On (Ctrl-T)"
+            "Mode: Python | Show agent thinking: On (Ctrl-T)"
         );
         assert_eq!(
             mode_status_text(Mode::Assistant, false),
-            "Mode: AI Assistant | Steps: Off (Ctrl-T)"
+            "Mode: AI Assistant | Show agent thinking: Off (Ctrl-T)"
         );
     }
 
