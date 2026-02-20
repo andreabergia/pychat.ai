@@ -552,8 +552,8 @@ mod tests {
                             },
                             AssistantPart::FunctionCall {
                                 id: Some("c2".to_string()),
-                                name: "get_last_exception".to_string(),
-                                args_json: json!({}),
+                                name: "inspect".to_string(),
+                                args_json: json!({"expr": "1"}),
                                 thought_signature: Some("sig2".to_string()),
                             },
                         ],

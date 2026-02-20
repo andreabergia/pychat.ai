@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::llm::provider::{AssistantPart, FunctionDeclaration};
-use crate::python::{CapabilityError, CapabilityProvider, ExceptionInfo};
+use crate::python::{CapabilityError, CapabilityProvider};
 
 #[derive(Debug, Clone)]
 pub struct FunctionCallSpec {
@@ -21,37 +21,14 @@ pub fn tool_declarations() -> Vec<FunctionDeclaration> {
             }),
         },
         FunctionDeclaration {
-            name: "get_type".to_string(),
-            description: "Get type information for a Python expression".to_string(),
-            parameters_json_schema: expr_schema(),
-        },
-        FunctionDeclaration {
-            name: "get_repr".to_string(),
-            description: "Get repr() for a Python expression".to_string(),
-            parameters_json_schema: expr_schema(),
-        },
-        FunctionDeclaration {
-            name: "get_dir".to_string(),
-            description: "List sorted attributes for a Python expression".to_string(),
-            parameters_json_schema: expr_schema(),
-        },
-        FunctionDeclaration {
-            name: "get_doc".to_string(),
-            description: "Get __doc__ for a Python expression".to_string(),
+            name: "inspect".to_string(),
+            description: "Inspect a Python expression and return structured type/shape/sample/callable details".to_string(),
             parameters_json_schema: expr_schema(),
         },
         FunctionDeclaration {
             name: "eval_expr".to_string(),
             description: "Evaluate a Python expression and return value/stdout/stderr".to_string(),
             parameters_json_schema: expr_schema(),
-        },
-        FunctionDeclaration {
-            name: "get_last_exception".to_string(),
-            description: "Get the last Python exception captured by the runtime".to_string(),
-            parameters_json_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
         },
     ]
 }
@@ -87,12 +64,8 @@ fn expr_schema() -> Value {
 fn dispatch_one<C: CapabilityProvider>(capabilities: &C, call: &FunctionCallSpec) -> Value {
     match call.name.as_str() {
         "list_globals" => dispatch_list_globals(capabilities, call),
-        "get_type" => dispatch_get_type(capabilities, call),
-        "get_repr" => dispatch_get_repr(capabilities, call),
-        "get_dir" => dispatch_get_dir(capabilities, call),
-        "get_doc" => dispatch_get_doc(capabilities, call),
+        "inspect" => dispatch_inspect(capabilities, call),
         "eval_expr" => dispatch_eval_expr(capabilities, call),
-        "get_last_exception" => dispatch_get_last_exception(capabilities, call),
         _ => error_response(
             "unknown_function",
             format!("unknown function: {}", call.name),
@@ -123,66 +96,14 @@ fn dispatch_list_globals<C: CapabilityProvider>(
     }
 }
 
-fn dispatch_get_type<C: CapabilityProvider>(capabilities: &C, call: &FunctionCallSpec) -> Value {
+fn dispatch_inspect<C: CapabilityProvider>(capabilities: &C, call: &FunctionCallSpec) -> Value {
     let expr = match expect_expr_arg(call) {
         Ok(expr) => expr,
         Err(err) => return err,
     };
 
-    match capabilities.get_type(expr) {
-        Ok(info) => ok_response(json!({
-            "name": info.name,
-            "module": info.module,
-            "qualified": info.qualified,
-        })),
-        Err(err) => map_capability_error(err),
-    }
-}
-
-fn dispatch_get_repr<C: CapabilityProvider>(capabilities: &C, call: &FunctionCallSpec) -> Value {
-    let expr = match expect_expr_arg(call) {
-        Ok(expr) => expr,
-        Err(err) => return err,
-    };
-
-    match capabilities.get_repr(expr) {
-        Ok(info) => ok_response(json!({
-            "repr": info.repr,
-            "truncated": info.truncated,
-            "original_len": info.original_len,
-        })),
-        Err(err) => map_capability_error(err),
-    }
-}
-
-fn dispatch_get_dir<C: CapabilityProvider>(capabilities: &C, call: &FunctionCallSpec) -> Value {
-    let expr = match expect_expr_arg(call) {
-        Ok(expr) => expr,
-        Err(err) => return err,
-    };
-
-    match capabilities.get_dir(expr) {
-        Ok(info) => ok_response(json!({
-            "members": info.members,
-            "truncated": info.truncated,
-            "original_len": info.original_len,
-        })),
-        Err(err) => map_capability_error(err),
-    }
-}
-
-fn dispatch_get_doc<C: CapabilityProvider>(capabilities: &C, call: &FunctionCallSpec) -> Value {
-    let expr = match expect_expr_arg(call) {
-        Ok(expr) => expr,
-        Err(err) => return err,
-    };
-
-    match capabilities.get_doc(expr) {
-        Ok(info) => ok_response(json!({
-            "doc": info.doc,
-            "truncated": info.truncated,
-            "original_len": info.original_len,
-        })),
+    match capabilities.inspect(expr) {
+        Ok(info) => ok_response(info.value),
         Err(err) => map_capability_error(err),
     }
 }
@@ -198,22 +119,6 @@ fn dispatch_eval_expr<C: CapabilityProvider>(capabilities: &C, call: &FunctionCa
             "value_repr": info.value_repr,
             "stdout": info.stdout,
             "stderr": info.stderr,
-        })),
-        Err(err) => map_capability_error(err),
-    }
-}
-
-fn dispatch_get_last_exception<C: CapabilityProvider>(
-    capabilities: &C,
-    call: &FunctionCallSpec,
-) -> Value {
-    if let Err(err) = expect_empty_args(call) {
-        return err;
-    }
-
-    match capabilities.get_last_exception() {
-        Ok(exception) => ok_response(json!({
-            "exception": exception.map(exception_to_json),
         })),
         Err(err) => map_capability_error(err),
     }
@@ -259,14 +164,6 @@ fn expect_expr_arg(call: &FunctionCallSpec) -> Result<&str, Value> {
     Ok(expr)
 }
 
-fn exception_to_json(exc: ExceptionInfo) -> Value {
-    json!({
-        "exc_type": exc.exc_type,
-        "message": exc.message,
-        "traceback": exc.traceback,
-    })
-}
-
 fn ok_response(result: Value) -> Value {
     json!({
         "ok": true,
@@ -308,27 +205,12 @@ mod tests {
     use crate::agent::dispatch::{FunctionCallSpec, dispatch_calls, tool_declarations};
     use crate::llm::provider::AssistantPart;
     use crate::python::PythonSession;
-    use crate::python::{
-        CapabilityError, CapabilityProvider, DirInfo, DocInfo, EvalInfo, ExceptionInfo,
-        GlobalEntry, ReprInfo, TypeInfo,
-    };
 
     #[test]
-    fn tool_declarations_include_phase5_tools() {
+    fn tool_declarations_include_minimal_tools() {
         let tools = tool_declarations();
         let names = tools.into_iter().map(|t| t.name).collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec![
-                "list_globals",
-                "get_type",
-                "get_repr",
-                "get_dir",
-                "get_doc",
-                "eval_expr",
-                "get_last_exception",
-            ]
-        );
+        assert_eq!(names, vec!["list_globals", "inspect", "eval_expr"]);
     }
 
     #[test]
@@ -355,12 +237,35 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_eval_expr_returns_value_and_streams() {
+    fn dispatch_inspect_returns_structured_result() {
         let session = PythonSession::initialize().expect("python");
         let responses = dispatch_calls(
             &session,
             &[FunctionCallSpec {
                 id: Some("c2".to_string()),
+                name: "inspect".to_string(),
+                args_json: json!({ "expr": "[1, 2, 3]" }),
+            }],
+        );
+
+        let AssistantPart::FunctionResponse { response_json, .. } =
+            responses.first().expect("response")
+        else {
+            panic!("expected function response part");
+        };
+
+        assert_eq!(response_json["ok"], json!(true));
+        assert_eq!(response_json["result"]["kind"], json!("sequence"));
+        assert_eq!(response_json["result"]["size"]["len"], json!(3));
+    }
+
+    #[test]
+    fn dispatch_eval_expr_returns_value_and_streams() {
+        let session = PythonSession::initialize().expect("python");
+        let responses = dispatch_calls(
+            &session,
+            &[FunctionCallSpec {
+                id: Some("c3".to_string()),
                 name: "eval_expr".to_string(),
                 args_json: json!({ "expr": "1 + 2" }),
             }],
@@ -377,67 +282,13 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_get_last_exception_includes_payload() {
-        struct StubProvider;
-        impl CapabilityProvider for StubProvider {
-            fn list_globals(&self) -> Result<Vec<GlobalEntry>, CapabilityError> {
-                Ok(vec![])
-            }
-            fn get_type(&self, _expr: &str) -> Result<TypeInfo, CapabilityError> {
-                unreachable!("not used")
-            }
-            fn get_repr(&self, _expr: &str) -> Result<ReprInfo, CapabilityError> {
-                unreachable!("not used")
-            }
-            fn get_dir(&self, _expr: &str) -> Result<DirInfo, CapabilityError> {
-                unreachable!("not used")
-            }
-            fn get_doc(&self, _expr: &str) -> Result<DocInfo, CapabilityError> {
-                unreachable!("not used")
-            }
-            fn eval_expr(&self, _expr: &str) -> Result<EvalInfo, CapabilityError> {
-                unreachable!("not used")
-            }
-            fn get_last_exception(&self) -> Result<Option<ExceptionInfo>, CapabilityError> {
-                Ok(Some(ExceptionInfo {
-                    exc_type: "ZeroDivisionError".to_string(),
-                    message: "division by zero".to_string(),
-                    traceback: "Traceback ...".to_string(),
-                }))
-            }
-        }
-        let provider = StubProvider;
-
-        let responses = dispatch_calls(
-            &provider,
-            &[FunctionCallSpec {
-                id: Some("c3".to_string()),
-                name: "get_last_exception".to_string(),
-                args_json: json!({}),
-            }],
-        );
-
-        let AssistantPart::FunctionResponse { response_json, .. } =
-            responses.first().expect("response")
-        else {
-            panic!("expected function response part");
-        };
-
-        assert_eq!(response_json["ok"], json!(true));
-        assert_eq!(
-            response_json["result"]["exception"]["exc_type"],
-            json!("ZeroDivisionError")
-        );
-    }
-
-    #[test]
     fn dispatch_invalid_args_returns_error_envelope() {
         let session = PythonSession::initialize().expect("python");
         let responses = dispatch_calls(
             &session,
             &[FunctionCallSpec {
                 id: Some("c4".to_string()),
-                name: "get_type".to_string(),
+                name: "inspect".to_string(),
                 args_json: json!({ "expr": 123 }),
             }],
         );
@@ -453,14 +304,14 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_unknown_function_returns_error_envelope() {
+    fn dispatch_removed_tool_returns_unknown_function() {
         let session = PythonSession::initialize().expect("python");
         let responses = dispatch_calls(
             &session,
             &[FunctionCallSpec {
                 id: Some("c5".to_string()),
-                name: "not_real".to_string(),
-                args_json: json!({}),
+                name: "get_repr".to_string(),
+                args_json: json!({ "expr": "1" }),
             }],
         );
 

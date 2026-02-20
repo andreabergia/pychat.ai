@@ -876,13 +876,13 @@ mod tests {
             events: vec![
                 AssistantStepEvent::ToolRequest {
                     id: Some("call_1".to_string()),
-                    name: "get_type".to_string(),
+                    name: "inspect".to_string(),
                     args_preview: compact_json(&json!({"expr":"x"})),
                 },
                 AssistantStepEvent::ToolResult {
                     id: Some("call_1".to_string()),
-                    name: "get_type".to_string(),
-                    response_preview: compact_json(&json!({"ok":true,"type":"int"})),
+                    name: "inspect".to_string(),
+                    response_preview: compact_json(&json!({"ok":true,"kind":"number"})),
                 },
             ],
             state: AssistantTurnState::CompletedText("x is an int".to_string()),
@@ -1035,7 +1035,7 @@ mod tests {
             prompt: "inspect y".to_string(),
             events: vec![AssistantStepEvent::ToolRequest {
                 id: None,
-                name: "get_repr".to_string(),
+                name: "inspect".to_string(),
                 args_preview: compact_json(&json!({"expr":"y"})),
             }],
             state: AssistantTurnState::InFlight,
