@@ -93,3 +93,5 @@ Embedded Python Interpreter (persistent session, state, execution)
 - Keep the commit messages short and focused
 - Always run tests, formatter, and linter before declaring a task "done"
 - When implementing a plan, split into multiple logical git commits
+- For task management, to break down complex work, track progress across sessions, and coordinate multi-step implementations, use `/dex`
+
