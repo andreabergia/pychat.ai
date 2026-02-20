@@ -99,15 +99,15 @@ impl PythonSession {
 
     pub fn run_user_input(&self, line: &str) -> Result<UserRunResult> {
         Python::attach(|py| -> Result<UserRunResult> {
-            let globals = self.globals.bind(py);
-            match self.compile_source(py, line, "<stdin>", "eval") {
-                Ok(_) => {
+            let eval_filename = self
+                .register_source(py, line, "eval")
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+            match self.compile_source(py, line, &eval_filename, "eval") {
+                Ok(compiled) => {
+                    let compiled = compiled.unbind();
                     let output = self.capture_output(py, |py| {
-                        let filename = self.register_source(py, line, "eval").map_err(|err| {
-                            pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
-                        })?;
-                        let compiled = self.compile_source(py, line, &filename, "eval")?;
-                        let value = self.eval_compiled(py, globals, &compiled)?;
+                        let globals = self.globals.bind(py);
+                        let value = self.eval_compiled(py, globals, compiled.bind(py))?;
                         let value_repr = self.safe_repr(py, &value).0;
                         Ok(Some(value_repr))
                     })?;
@@ -132,6 +132,7 @@ impl PythonSession {
                                 self.register_source(py, line, "exec").map_err(|err| {
                                     pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
                                 })?;
+                            let globals = self.globals.bind(py);
                             let compiled = self.compile_source(py, line, &filename, "exec")?;
                             self.exec_compiled(py, globals, &compiled)?;
                             Ok(None)
