@@ -160,7 +160,7 @@ struct CommandInputWidget<'a> {
 impl TimelineWidget for CommandInputWidget<'_> {
     fn render(&self, context: &RenderContext<'_>, lines: &mut Vec<Line<'static>>) {
         lines.push(Line::from(vec![
-            Span::styled("cmd>", context.theme.style(ThemeToken::CommandPrompt)),
+            Span::styled("cmd> ", context.theme.style(ThemeToken::CommandPrompt)),
             Span::styled(
                 self.text.to_string(),
                 context

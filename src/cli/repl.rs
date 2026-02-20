@@ -1032,7 +1032,7 @@ fn resolve_color_enabled_with(
 
 pub fn prompt_for(mode: Mode, command_input: bool) -> &'static str {
     if command_input {
-        return "cmd>";
+        return "cmd> ";
     }
 
     match mode {
@@ -1117,7 +1117,7 @@ mod tests {
     fn test_prompt_for() {
         assert_eq!(prompt_for(Mode::Python, false), "py> ");
         assert_eq!(prompt_for(Mode::Assistant, false), "ai> ");
-        assert_eq!(prompt_for(Mode::Python, true), "cmd>");
+        assert_eq!(prompt_for(Mode::Python, true), "cmd> ");
     }
 
     #[test]
@@ -1297,7 +1297,7 @@ mod tests {
         execute_command(&mut state, &mut ui_state, "/trace");
         let lines = timeline_text_lines(&ui_state);
         assert!(
-            lines.iter().any(|line| line == "cmd>/trace"),
+            lines.iter().any(|line| line == "cmd> /trace"),
             "command input should be rendered in timeline"
         );
         let trace_path = state.trace.file_path().display().to_string();
