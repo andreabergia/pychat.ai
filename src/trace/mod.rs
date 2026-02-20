@@ -1,8 +1,10 @@
 use anyhow::{Result, anyhow, bail};
 use reqwest::header::HeaderMap;
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,7 +43,7 @@ impl SessionTrace {
             .map_or(0, |duration| duration.as_secs());
         let file_name = format!("session-{session_id}-{timestamp}.log");
         let file_path = trace_dir.join(&file_name);
-        let file = File::create(&file_path)
+        let file = create_trace_file(&file_path)
             .map_err(|err| anyhow!("Failed to create trace file {}: {err}", file_path.display()))?;
 
         Ok(Self {
@@ -136,6 +138,21 @@ impl SessionTrace {
     }
 }
 
+#[cfg(unix)]
+fn create_trace_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_trace_file(path: &Path) -> std::io::Result<File> {
+    File::create(path)
+}
+
 fn current_timestamp() -> String {
     let now = OffsetDateTime::now_utc();
     format!(
@@ -174,6 +191,8 @@ fn resolve_trace_dir(xdg_state_home: Option<&str>, home_dir: Option<&Path>) -> R
 mod tests {
     use super::{SessionTrace, resolve_trace_dir};
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -221,5 +240,15 @@ mod tests {
         assert!(first_line.starts_with("[20"));
         assert!(first_line.contains("T"));
         assert!(first_line.contains("Z] [py.out     ] value"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_file_permissions_are_owner_only() {
+        let dir = tempdir().expect("tempdir");
+        let trace = SessionTrace::create_in_temp_dir("abc", dir.path()).expect("trace");
+        let metadata = fs::metadata(trace.file_path()).expect("metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }
