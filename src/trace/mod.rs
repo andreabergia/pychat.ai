@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use time::OffsetDateTime;
 
 const TRACE_DIR_NAME: &str = "pyaichat/traces";
 
@@ -17,7 +18,7 @@ pub struct SessionTrace {
 
 struct TraceInner {
     writer: Mutex<BufWriter<File>>,
-    file_name: String,
+    file_path: PathBuf,
     write_failed: AtomicBool,
 }
 
@@ -46,7 +47,7 @@ impl SessionTrace {
         Ok(Self {
             inner: Arc::new(TraceInner {
                 writer: Mutex::new(BufWriter::new(file)),
-                file_name,
+                file_path,
                 write_failed: AtomicBool::new(false),
             }),
         })
@@ -57,16 +58,16 @@ impl SessionTrace {
         Self::create_in_dir(session_id, trace_dir)
     }
 
-    pub fn file_name(&self) -> &str {
-        &self.inner.file_name
+    pub fn file_path(&self) -> &Path {
+        &self.inner.file_path
     }
 
     pub fn log_input_python(&self, text: &str) {
-        self.log_lines("input.python", text);
+        self.log_lines("py.in", text);
     }
 
     pub fn log_input_assistant(&self, text: &str) {
-        self.log_lines("input.assistant", text);
+        self.log_lines("ai.in", text);
     }
 
     pub fn log_output(&self, kind: &str, text: &str) {
@@ -74,37 +75,31 @@ impl SessionTrace {
     }
 
     pub fn log_http_request(&self, method: &str, url: &str, headers: &HeaderMap, body: &str) {
-        self.log_single("http.request", &format!("{method} {url}"));
+        self.log_single("ai.http.in", &format!("{method} {url}"));
         for (name, value) in headers {
             let value = value
                 .to_str()
                 .map(std::string::ToString::to_string)
                 .unwrap_or_else(|_| "<non-utf8>".to_string());
-            self.log_single(
-                "http.request.header",
-                &format!("{}: {}", name.as_str(), value),
-            );
+            self.log_single("ai.http.in", &format!("{}: {}", name.as_str(), value));
         }
-        self.log_block("http.request.body", body);
+        self.log_lines("ai.http.in", body);
     }
 
     pub fn log_http_response(&self, status: u16, headers: &HeaderMap, body: &str) {
-        self.log_single("http.response", &format!("HTTP {status}"));
+        self.log_single("ai.http.out", &format!("HTTP {status}"));
         for (name, value) in headers {
             let value = value
                 .to_str()
                 .map(std::string::ToString::to_string)
                 .unwrap_or_else(|_| "<non-utf8>".to_string());
-            self.log_single(
-                "http.response.header",
-                &format!("{}: {}", name.as_str(), value),
-            );
+            self.log_single("ai.http.out", &format!("{}: {}", name.as_str(), value));
         }
-        self.log_block("http.response.body", body);
+        self.log_lines("ai.http.out", body);
     }
 
     pub fn log_http_error(&self, message: &str) {
-        self.log_single("http.error", message);
+        self.log_single("ai.http.err", message);
     }
 
     fn log_lines(&self, kind: &str, text: &str) {
@@ -118,24 +113,9 @@ impl SessionTrace {
         }
     }
 
-    fn log_block(&self, kind: &str, text: &str) {
-        let timestamp = current_timestamp();
-        self.write_raw(&format!("[{timestamp}] [{kind}.begin]\n"));
-        if text.is_empty() {
-            self.write_raw("<empty>\n");
-        } else {
-            self.write_raw(text);
-            if !text.ends_with('\n') {
-                self.write_raw("\n");
-            }
-        }
-        let timestamp = current_timestamp();
-        self.write_raw(&format!("[{timestamp}] [{kind}.end]\n"));
-    }
-
     fn log_single(&self, kind: &str, text: &str) {
         let timestamp = current_timestamp();
-        self.write_raw(&format!("[{timestamp}] [{kind}] {text}\n"));
+        self.write_raw(&format!("[{timestamp}] [{:<11}] {text}\n", kind));
     }
 
     fn write_raw(&self, text: &str) {
@@ -156,10 +136,18 @@ impl SessionTrace {
     }
 }
 
-fn current_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
+fn current_timestamp() -> String {
+    let now = OffsetDateTime::now_utc();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+        now.millisecond()
+    )
 }
 
 pub fn resolve_trace_dir_from_env() -> Result<PathBuf> {
@@ -184,8 +172,10 @@ fn resolve_trace_dir(xdg_state_home: Option<&str>, home_dir: Option<&Path>) -> R
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_trace_dir;
+    use super::{SessionTrace, resolve_trace_dir};
+    use std::fs;
     use std::path::Path;
+    use tempfile::tempdir;
 
     #[test]
     fn resolve_trace_dir_uses_xdg_state_when_set() {
@@ -217,5 +207,19 @@ mod tests {
             err.to_string()
                 .contains("Failed to resolve trace path: HOME directory is unavailable")
         );
+    }
+
+    #[test]
+    fn trace_line_uses_iso_timestamp_and_padded_kind() {
+        let dir = tempdir().expect("tempdir");
+        let trace = SessionTrace::create_in_temp_dir("abc", dir.path()).expect("trace");
+        let path = trace.file_path().to_path_buf();
+        trace.log_output("py.out", "value");
+
+        let content = fs::read_to_string(path).expect("read trace");
+        let first_line = content.lines().next().expect("line");
+        assert!(first_line.starts_with("[20"));
+        assert!(first_line.contains("T"));
+        assert!(first_line.contains("Z] [py.out     ] value"));
     }
 }

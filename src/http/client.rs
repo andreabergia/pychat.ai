@@ -305,7 +305,7 @@ mod tests {
 
         let dir = tempdir().expect("tempdir");
         let trace = SessionTrace::create_in_temp_dir("test-session", dir.path()).expect("trace");
-        let trace_file = dir.path().join(trace.file_name());
+        let trace_file = trace.file_path().to_path_buf();
 
         let client =
             HttpClient::new(Client::new(), HttpDebugConfig::disabled()).with_trace(trace.clone());

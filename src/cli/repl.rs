@@ -163,10 +163,7 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    println!(
-        "{}",
-        session_closed_message(&state.session_id, state.trace.file_name())
-    );
+    println!("{}", session_closed_message(state.trace.file_path()));
 
     run_result
 }
@@ -779,8 +776,11 @@ fn status_right_text(session_id: &str) -> String {
     format!("PyAiChat | Session: {session_id}")
 }
 
-fn session_closed_message(session_id: &str, trace_file_name: &str) -> String {
-    format!("PyAiChat session ended.\nSession ID: {session_id}\nTrace file: {trace_file_name}")
+fn session_closed_message(trace_file_path: &std::path::Path) -> String {
+    format!(
+        "PyAiChat session ended.\nTrace file: {}",
+        trace_file_path.display()
+    )
 }
 
 fn push_output(ui_state: &mut UiState, trace: &SessionTrace, kind: OutputKind, text: &str) {
@@ -790,18 +790,18 @@ fn push_output(ui_state: &mut UiState, trace: &SessionTrace, kind: OutputKind, t
 
 fn output_trace_kind(kind: OutputKind) -> &'static str {
     match kind {
-        OutputKind::UserInputPython => "output.user_input_python",
-        OutputKind::UserInputAssistant => "output.user_input_assistant",
-        OutputKind::PythonValue => "output.python.value",
-        OutputKind::PythonStdout => "output.python.stdout",
-        OutputKind::PythonStderr => "output.python.stderr",
-        OutputKind::PythonTraceback => "output.python.traceback",
-        OutputKind::AssistantText => "output.assistant.text",
-        OutputKind::AssistantWaiting => "output.assistant.waiting",
-        OutputKind::AssistantProgressRequest => "output.assistant.progress.request",
-        OutputKind::AssistantProgressResult => "output.assistant.progress.result",
-        OutputKind::SystemInfo => "output.system.info",
-        OutputKind::SystemError => "output.system.error",
+        OutputKind::UserInputPython => "py.in",
+        OutputKind::UserInputAssistant => "ai.in",
+        OutputKind::PythonValue => "py.out",
+        OutputKind::PythonStdout => "py.out",
+        OutputKind::PythonStderr => "py.err",
+        OutputKind::PythonTraceback => "py.tb",
+        OutputKind::AssistantText => "ai.out",
+        OutputKind::AssistantWaiting => "ai.wait",
+        OutputKind::AssistantProgressRequest => "ai.step",
+        OutputKind::AssistantProgressResult => "ai.step",
+        OutputKind::SystemInfo => "sys.info",
+        OutputKind::SystemError => "sys.err",
     }
 }
 
@@ -899,22 +899,21 @@ mod tests {
     }
 
     #[test]
-    fn session_closed_message_includes_label_and_id() {
+    fn session_closed_message_includes_trace_file_path() {
         assert_eq!(
-            session_closed_message("abc123", "session-abc123.log"),
-            "PyAiChat session ended.\nSession ID: abc123\nTrace file: session-abc123.log"
+            session_closed_message(std::path::Path::new(
+                "/tmp/pyaichat/traces/session-abc123.log"
+            )),
+            "PyAiChat session ended.\nTrace file: /tmp/pyaichat/traces/session-abc123.log"
         );
     }
 
     #[test]
     fn output_trace_kind_maps_tokens() {
-        assert_eq!(
-            output_trace_kind(OutputKind::PythonStdout),
-            "output.python.stdout"
-        );
+        assert_eq!(output_trace_kind(OutputKind::PythonStdout), "py.out");
         assert_eq!(
             output_trace_kind(OutputKind::AssistantProgressResult),
-            "output.assistant.progress.result"
+            "ai.step"
         );
     }
 
