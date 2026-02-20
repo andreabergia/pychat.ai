@@ -1,8 +1,11 @@
 use anyhow::{Result, anyhow};
 use pyo3::prelude::*;
-use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyModule, PyTuple, PyTupleMethods};
+use pyo3::types::{
+    PyAnyMethods, PyDict, PyDictMethods, PyFloat, PyList, PyModule, PyString, PyTuple,
+};
 use serde_json::Value;
-use std::ffi::CString;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::capabilities::{
     CapabilityError, CapabilityProvider, CapabilityResult, EvalInfo, GlobalEntry, InspectInfo,
@@ -48,6 +51,8 @@ pub enum InputCompleteness {
 
 pub struct PythonSession {
     globals: Py<PyDict>,
+    last_exception: Mutex<Option<ExceptionInfo>>,
+    source_counter: AtomicU64,
 }
 
 #[allow(dead_code)]
@@ -58,12 +63,12 @@ impl PythonSession {
             let builtins = PyModule::import(py, "builtins")?;
             globals.set_item("__builtins__", builtins)?;
             globals.set_item("__name__", "__main__")?;
-
-            Self::install_runtime_helpers(py, &globals)?;
             Self::health_check(py, &globals)?;
 
             let session = Self {
                 globals: globals.unbind(),
+                last_exception: Mutex::new(None),
+                source_counter: AtomicU64::new(0),
             };
 
             if !session.is_healthy() {
@@ -77,81 +82,110 @@ impl PythonSession {
     #[allow(dead_code)]
     pub fn exec_code(&self, code: &str) -> Result<ExecResult> {
         Python::attach(|py| -> Result<ExecResult> {
-            let globals = self.globals.bind(py);
-            let result = Self::call_runtime_helper(globals, "_pyaichat_exec_code", (code,))?;
-            if Self::result_ok(&result)? {
-                Ok(ExecResult {
-                    stdout: Self::dict_string(&result, "stdout")?,
-                    stderr: Self::dict_string(&result, "stderr")?,
-                })
-            } else {
-                let exception = Self::dict_exception(&result)?;
-                anyhow::bail!("{}", exception.traceback)
-            }
+            self.exec_code_inner(py, code)
+                .map_err(|exception| anyhow!(exception.traceback))
         })
     }
 
     #[allow(dead_code)]
     pub fn eval_expr(&self, expr: &str) -> Result<EvalResult> {
         Python::attach(|py| -> Result<EvalResult> {
-            let globals = self.globals.bind(py);
-            let result = Self::call_runtime_helper(globals, "_pyaichat_eval_expr", (expr,))?;
-            if Self::result_ok(&result)? {
-                Ok(EvalResult {
-                    value_repr: Self::dict_string(&result, "value_repr")?,
-                    stdout: Self::dict_string(&result, "stdout")?,
-                    stderr: Self::dict_string(&result, "stderr")?,
-                })
-            } else {
-                let exception = Self::dict_exception(&result)?;
-                anyhow::bail!("{}", exception.traceback)
-            }
+            self.eval_expr_inner(py, expr)
+                .map_err(|exception| anyhow!(exception.traceback))
         })
     }
 
     pub fn run_user_input(&self, line: &str) -> Result<UserRunResult> {
         Python::attach(|py| -> Result<UserRunResult> {
             let globals = self.globals.bind(py);
-            let result = Self::call_runtime_helper(globals, "_pyaichat_run_user_input", (line,))?;
-            let kind = Self::dict_string(&result, "kind")?;
-            let ok = Self::result_ok(&result)?;
-
-            match (kind.as_str(), ok) {
-                ("evaluated", true) => Ok(UserRunResult::Evaluated(EvalResult {
-                    value_repr: Self::dict_string(&result, "value_repr")?,
-                    stdout: Self::dict_string(&result, "stdout")?,
-                    stderr: Self::dict_string(&result, "stderr")?,
-                })),
-                ("executed", true) => Ok(UserRunResult::Executed(ExecResult {
-                    stdout: Self::dict_string(&result, "stdout")?,
-                    stderr: Self::dict_string(&result, "stderr")?,
-                })),
-                (_, false) => Ok(UserRunResult::Failed {
-                    stdout: Self::dict_string(&result, "stdout")?,
-                    stderr: Self::dict_string(&result, "stderr")?,
-                    exception: Self::dict_exception(&result)?,
-                }),
-                _ => anyhow::bail!("unknown user run result kind: {kind}"),
+            match self.compile_source(py, line, "<stdin>", "eval") {
+                Ok(_) => {
+                    let output = self.capture_output(py, |py| {
+                        let filename = self.register_source(py, line, "eval").map_err(|err| {
+                            pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
+                        })?;
+                        let compiled = self.compile_source(py, line, &filename, "eval")?;
+                        let value = self.eval_compiled(py, globals, &compiled)?;
+                        let value_repr = self.safe_repr(py, &value).0;
+                        Ok(Some(value_repr))
+                    })?;
+                    if let Some(exception) = output.exception {
+                        Ok(UserRunResult::Failed {
+                            stdout: output.stdout,
+                            stderr: output.stderr,
+                            exception,
+                        })
+                    } else {
+                        Ok(UserRunResult::Evaluated(EvalResult {
+                            value_repr: output.value_repr.unwrap_or_default(),
+                            stdout: output.stdout,
+                            stderr: output.stderr,
+                        }))
+                    }
+                }
+                Err(err) => {
+                    if err.is_instance_of::<pyo3::exceptions::PySyntaxError>(py) {
+                        let output = self.capture_output(py, |py| {
+                            let filename =
+                                self.register_source(py, line, "exec").map_err(|err| {
+                                    pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
+                                })?;
+                            let compiled = self.compile_source(py, line, &filename, "exec")?;
+                            self.exec_compiled(py, globals, &compiled)?;
+                            Ok(None)
+                        })?;
+                        if let Some(exception) = output.exception {
+                            Ok(UserRunResult::Failed {
+                                stdout: output.stdout,
+                                stderr: output.stderr,
+                                exception,
+                            })
+                        } else {
+                            Ok(UserRunResult::Executed(ExecResult {
+                                stdout: output.stdout,
+                                stderr: output.stderr,
+                            }))
+                        }
+                    } else {
+                        let exception = self.capture_exception(py, &err)?;
+                        self.store_last_exception(Some(exception.clone()))?;
+                        Ok(UserRunResult::Failed {
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            exception,
+                        })
+                    }
+                }
             }
         })
     }
 
     pub fn check_input_completeness(&self, source: &str) -> Result<InputCompleteness> {
         Python::attach(|py| -> Result<InputCompleteness> {
-            let globals = self.globals.bind(py);
-            let result =
-                Self::call_runtime_helper(globals, "_pyaichat_check_input_complete", (source,))?;
-            if !Self::result_ok(&result)? {
-                let exception = Self::dict_exception(&result)?;
-                anyhow::bail!("{}", exception.traceback)
-            }
-
-            let status = Self::dict_string(&result, "status")?;
-            match status.as_str() {
-                "complete" => Ok(InputCompleteness::Complete),
-                "incomplete" => Ok(InputCompleteness::Incomplete),
-                "invalid" => Ok(InputCompleteness::Invalid),
-                _ => anyhow::bail!("unknown completeness status: {status}"),
+            let codeop = PyModule::import(py, "codeop")?;
+            let compile_command = codeop.getattr("compile_command")?;
+            let result = compile_command.call1((source, "<stdin>", "exec"));
+            match result {
+                Ok(value) => {
+                    if value.is_none() {
+                        Ok(InputCompleteness::Incomplete)
+                    } else {
+                        Ok(InputCompleteness::Complete)
+                    }
+                }
+                Err(err)
+                    if err.is_instance_of::<pyo3::exceptions::PySyntaxError>(py)
+                        || err.is_instance_of::<pyo3::exceptions::PyOverflowError>(py)
+                        || err.is_instance_of::<pyo3::exceptions::PyValueError>(py)
+                        || err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) =>
+                {
+                    Ok(InputCompleteness::Invalid)
+                }
+                Err(err) => {
+                    let exception = self.capture_exception(py, &err)?;
+                    self.store_last_exception(Some(exception.clone()))?;
+                    anyhow::bail!("{}", exception.traceback)
+                }
             }
         })
     }
@@ -160,31 +194,32 @@ impl PythonSession {
     pub fn list_globals(&self) -> Result<Vec<GlobalEntry>> {
         Python::attach(|py| -> Result<Vec<GlobalEntry>> {
             let globals = self.globals.bind(py);
-            let py_entries = Self::call_runtime_helper(globals, "_pyaichat_list_globals", ())?;
-            let py_entries = Self::cast_list(&py_entries)?;
             let mut entries = Vec::new();
-            for item in py_entries.iter() {
-                let tuple = Self::cast_tuple(&item)?;
-                entries.push(GlobalEntry {
-                    name: tuple.get_item(0)?.extract()?,
-                    type_name: tuple.get_item(1)?.extract()?,
-                });
+            for (name, value) in globals.iter() {
+                let name: String = name.extract()?;
+                if name == "__builtins__" {
+                    continue;
+                }
+                if name.starts_with("_pyaichat_") {
+                    continue;
+                }
+                if name.starts_with("__") && name.ends_with("__") {
+                    continue;
+                }
+                let type_name: String = value.get_type().name()?.extract()?;
+                entries.push(GlobalEntry { name, type_name });
             }
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
             Ok(entries)
         })
     }
 
     #[allow(dead_code)]
     pub fn get_last_exception(&self) -> Result<Option<ExceptionInfo>> {
-        Python::attach(|py| -> Result<Option<ExceptionInfo>> {
-            let globals = self.globals.bind(py);
-            let result = Self::call_runtime_helper(globals, "_pyaichat_get_last_exception", ())?;
-            if result.is_none() {
-                Ok(None)
-            } else {
-                Ok(Some(Self::any_to_exception(result)?))
-            }
-        })
+        self.last_exception
+            .lock()
+            .map(|value| value.clone())
+            .map_err(|err| anyhow!("failed to lock last_exception: {err}"))
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -199,148 +234,696 @@ impl PythonSession {
         Ok(())
     }
 
-    fn install_runtime_helpers(py: Python<'_>, globals: &Bound<'_, PyDict>) -> Result<()> {
-        let helper_code = CString::new(include_str!("runtime_helpers.py"))?;
-        py.run(helper_code.as_c_str(), Some(globals), Some(globals))?;
+    fn compile_source<'py>(
+        &self,
+        py: Python<'py>,
+        source: &str,
+        filename: &str,
+        mode: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let builtins = PyModule::import(py, "builtins")?;
+        builtins.getattr("compile")?.call1((source, filename, mode))
+    }
+
+    fn exec_compiled(
+        &self,
+        py: Python<'_>,
+        globals: &Bound<'_, PyDict>,
+        compiled: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let builtins = PyModule::import(py, "builtins")?;
+        let _ = builtins
+            .getattr("exec")?
+            .call1((compiled, globals, globals))?;
         Ok(())
     }
 
-    fn call_runtime_helper<'py, A>(
+    fn eval_compiled<'py>(
+        &self,
+        py: Python<'py>,
         globals: &Bound<'py, PyDict>,
-        helper_name: &str,
-        args: A,
-    ) -> Result<Bound<'py, pyo3::types::PyAny>>
-    where
-        A: pyo3::call::PyCallArgs<'py>,
-    {
-        let helper = globals
-            .get_item(helper_name)?
-            .ok_or_else(|| anyhow!("missing runtime helper: {helper_name}"))?;
-        let result = helper.call1(args)?;
-        Ok(result)
+        compiled: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let builtins = PyModule::import(py, "builtins")?;
+        builtins
+            .getattr("eval")?
+            .call1((compiled, globals, globals))
     }
 
-    fn result_ok(result: &Bound<'_, pyo3::types::PyAny>) -> Result<bool> {
-        let dict = Self::cast_dict(result)?;
-        Ok(dict
-            .get_item("ok")?
-            .ok_or_else(|| anyhow!("missing ok in helper result"))?
-            .extract()?)
+    fn register_source(&self, py: Python<'_>, source: &str, mode: &str) -> Result<String> {
+        let counter = self.source_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let filename = format!("<pyaichat-{mode}-{counter}>");
+        let text = if source.ends_with('\n') {
+            source.to_string()
+        } else {
+            format!("{source}\n")
+        };
+
+        let linecache = PyModule::import(py, "linecache")?;
+        let cache = linecache.getattr("cache")?;
+        let lines = text
+            .lines()
+            .map(|line| format!("{line}\n"))
+            .collect::<Vec<_>>();
+        let entry = (text.len(), py.None(), lines, filename.clone());
+        cache.set_item(filename.as_str(), entry)?;
+        Ok(filename)
     }
 
-    fn dict_string(result: &Bound<'_, pyo3::types::PyAny>, key: &str) -> Result<String> {
-        let dict = Self::cast_dict(result)?;
-        Ok(dict
-            .get_item(key)?
-            .ok_or_else(|| anyhow!("missing {key} in helper result"))?
-            .extract()?)
+    fn safe_repr(&self, _py: Python<'_>, value: &Bound<'_, PyAny>) -> (String, Option<String>) {
+        match value.repr() {
+            Ok(text) => match text.extract::<String>() {
+                Ok(text) => (text, None),
+                Err(err) => (
+                    format!("<repr failed: TypeError: {err}>"),
+                    Some(format!("TypeError: {err}")),
+                ),
+            },
+            Err(err) => {
+                let err_type = err
+                    .get_type(_py)
+                    .name()
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|_| "Exception".to_string());
+                let message = err
+                    .value(_py)
+                    .str()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| "repr failed".to_string());
+                (
+                    format!("<repr failed: {err_type}: {message}>"),
+                    Some(format!("{err_type}: {message}")),
+                )
+            }
+        }
     }
 
-    fn dict_exception(result: &Bound<'_, pyo3::types::PyAny>) -> Result<ExceptionInfo> {
-        let dict = Self::cast_dict(result)?;
-        let exception = dict
-            .get_item("exception")?
-            .ok_or_else(|| anyhow!("missing exception in helper result"))?;
-        Self::any_to_exception(exception)
+    fn truncate_text(value: &str, max_chars: usize) -> (String, bool, usize) {
+        let original_len = value.chars().count();
+        if original_len <= max_chars {
+            return (value.to_string(), false, original_len);
+        }
+        let text = value.chars().take(max_chars).collect::<String>();
+        (text, true, original_len)
     }
 
-    fn any_to_exception(exception: Bound<'_, pyo3::types::PyAny>) -> Result<ExceptionInfo> {
-        let dict = Self::cast_dict(&exception)?;
+    fn capture_exception(&self, py: Python<'_>, err: &PyErr) -> Result<ExceptionInfo> {
+        let exc_type = err.get_type(py).name()?.to_string();
+        let message = err
+            .value(py)
+            .str()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| String::new());
+
+        let traceback_module = PyModule::import(py, "traceback")?;
+        let formatted = traceback_module.getattr("format_exception")?.call1((
+            err.get_type(py),
+            err.value(py),
+            err.traceback(py),
+        ))?;
+        let mut traceback = String::new();
+        let lines = formatted
+            .cast::<PyList>()
+            .map_err(|e| anyhow!(e.to_string()))?;
+        for line in lines.iter() {
+            let line = line.extract::<String>()?;
+            traceback.push_str(&line);
+        }
+
         Ok(ExceptionInfo {
-            exc_type: dict
-                .get_item("exc_type")?
-                .ok_or_else(|| anyhow!("missing exc_type"))?
-                .extract()?,
-            message: dict
-                .get_item("message")?
-                .ok_or_else(|| anyhow!("missing message"))?
-                .extract()?,
-            traceback: dict
-                .get_item("traceback")?
-                .ok_or_else(|| anyhow!("missing traceback"))?
-                .extract()?,
+            exc_type,
+            message,
+            traceback,
         })
     }
 
-    fn cast_dict<'a>(value: &'a Bound<'a, pyo3::types::PyAny>) -> Result<&'a Bound<'a, PyDict>> {
-        value
-            .cast::<PyDict>()
-            .map_err(|err| anyhow!(err.to_string()))
+    fn store_last_exception(&self, value: Option<ExceptionInfo>) -> Result<()> {
+        let mut guard = self
+            .last_exception
+            .lock()
+            .map_err(|err| anyhow!("failed to lock last_exception: {err}"))?;
+        *guard = value;
+        Ok(())
     }
 
-    #[allow(dead_code)]
-    fn cast_list<'a>(value: &'a Bound<'a, pyo3::types::PyAny>) -> Result<&'a Bound<'a, PyList>> {
-        value
-            .cast::<PyList>()
-            .map_err(|err| anyhow!(err.to_string()))
+    fn eval_expr_inner(&self, py: Python<'_>, expr: &str) -> Result<EvalResult, ExceptionInfo> {
+        let globals = self.globals.bind(py);
+        let output = self.capture_output(py, |py| {
+            let filename = self
+                .register_source(py, expr, "eval")
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+            let compiled = self.compile_source(py, expr, &filename, "eval")?;
+            let value = self.eval_compiled(py, globals, &compiled)?;
+            let value_repr = self.safe_repr(py, &value).0;
+            Ok(Some(value_repr))
+        });
+
+        match output {
+            Ok(output) => {
+                if let Some(exception) = output.exception {
+                    Err(exception)
+                } else {
+                    Ok(EvalResult {
+                        value_repr: output.value_repr.unwrap_or_default(),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    })
+                }
+            }
+            Err(err) => {
+                let exception = ExceptionInfo {
+                    exc_type: "RuntimeError".to_string(),
+                    message: err.to_string(),
+                    traceback: err.to_string(),
+                };
+                let _ = self.store_last_exception(Some(exception.clone()));
+                Err(exception)
+            }
+        }
     }
 
-    #[allow(dead_code)]
-    fn cast_tuple<'a>(value: &'a Bound<'a, pyo3::types::PyAny>) -> Result<&'a Bound<'a, PyTuple>> {
-        value
-            .cast::<PyTuple>()
-            .map_err(|err| anyhow!(err.to_string()))
+    fn exec_code_inner(&self, py: Python<'_>, code: &str) -> Result<ExecResult, ExceptionInfo> {
+        let globals = self.globals.bind(py);
+        let output = self.capture_output(py, |py| {
+            let filename = self
+                .register_source(py, code, "exec")
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+            let compiled = self.compile_source(py, code, &filename, "exec")?;
+            self.exec_compiled(py, globals, &compiled)?;
+            Ok(None)
+        });
+
+        match output {
+            Ok(output) => {
+                if let Some(exception) = output.exception {
+                    Err(exception)
+                } else {
+                    Ok(ExecResult {
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    })
+                }
+            }
+            Err(err) => {
+                let exception = ExceptionInfo {
+                    exc_type: "RuntimeError".to_string(),
+                    message: err.to_string(),
+                    traceback: err.to_string(),
+                };
+                let _ = self.store_last_exception(Some(exception.clone()));
+                Err(exception)
+            }
+        }
+    }
+
+    fn inspect_expr(&self, py: Python<'_>, expr: &str) -> CapabilityResult<Value> {
+        let globals = self.globals.bind(py);
+        let value = match self.compile_source(py, expr, "<inspect>", "eval") {
+            Ok(compiled) => match self.eval_compiled(py, globals, &compiled) {
+                Ok(value) => value,
+                Err(err) => {
+                    let exception = self
+                        .capture_exception(py, &err)
+                        .map_err(Self::cap_internal)?;
+                    let _ = self.store_last_exception(Some(exception.clone()));
+                    return Err(CapabilityError::PythonException(exception));
+                }
+            },
+            Err(err) => {
+                let exception = self
+                    .capture_exception(py, &err)
+                    .map_err(Self::cap_internal)?;
+                let _ = self.store_last_exception(Some(exception.clone()));
+                return Err(CapabilityError::PythonException(exception));
+            }
+        };
+
+        self.build_inspect_payload(py, &value)
+            .map_err(CapabilityError::PythonException)
+    }
+
+    fn build_inspect_payload(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+    ) -> Result<Value, ExceptionInfo> {
+        let kind = self.kind_of(py, value);
+        let (repr_text, repr_error) = self.safe_repr(py, value);
+        let (repr_text, repr_truncated, repr_original_len) =
+            Self::truncate_text(&repr_text, super::capabilities::REPR_MAX_LEN);
+
+        let doc_payload = self.doc_payload(py, value);
+        let mut payload = serde_json::json!({
+            "type": self.type_payload(py, value),
+            "kind": kind,
+            "repr": {
+                "text": repr_text,
+                "truncated": repr_truncated,
+                "original_len": repr_original_len,
+            },
+            "doc": doc_payload,
+            "members": self.members_payload(py, value)?,
+            "limits": {
+                "repr_max_chars": super::capabilities::REPR_MAX_LEN,
+                "doc_max_chars": super::capabilities::DOC_MAX_LEN,
+                "sample_max_items": super::capabilities::INSPECT_SAMPLE_MAX_ITEMS,
+                "member_max_per_group": super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP,
+                "source_preview_max_chars": super::capabilities::INSPECT_SOURCE_PREVIEW_MAX_LEN,
+            }
+        });
+        if let Some(error) = repr_error {
+            payload["repr"]["repr_error"] = Value::String(error);
+        }
+        if let Some(size) = self.size_payload(py, value) {
+            payload["size"] = size;
+        }
+        if let Some(sample) = self.sample_payload(py, value, &kind) {
+            payload["sample"] = sample;
+        }
+        if value.is_callable() {
+            payload["callable"] = self.callable_payload(py, value);
+        }
+        if self.is_exception_instance(py, value) {
+            let exc_type = value
+                .get_type()
+                .name()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "Exception".to_string());
+            let message = value
+                .str()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            payload["exception"] = serde_json::json!({
+                "exc_type": exc_type,
+                "message": message,
+            });
+        }
+        Ok(payload)
+    }
+
+    fn kind_of(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> String {
+        if value.is_none() {
+            return "none".to_string();
+        }
+        if value.is_instance_of::<pyo3::types::PyBool>() {
+            return "bool".to_string();
+        }
+        if value.is_instance_of::<pyo3::types::PyInt>()
+            || value.is_instance_of::<PyFloat>()
+            || value.is_instance_of::<pyo3::types::PyComplex>()
+        {
+            return "number".to_string();
+        }
+        if value.is_instance_of::<PyString>() {
+            return "string".to_string();
+        }
+        if value.is_instance_of::<pyo3::types::PyBytes>()
+            || value.is_instance_of::<pyo3::types::PyByteArray>()
+        {
+            return "bytes".to_string();
+        }
+        if value.cast::<PyDict>().is_ok() {
+            return "mapping".to_string();
+        }
+        if value.is_instance_of::<PyList>() || value.is_instance_of::<PyTuple>() {
+            return "sequence".to_string();
+        }
+        let type_name = value
+            .get_type()
+            .name()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        if matches!(type_name.as_str(), "range") {
+            return "sequence".to_string();
+        }
+        if matches!(type_name.as_str(), "set" | "frozenset") {
+            return "set".to_string();
+        }
+
+        if let Ok(inspect) = PyModule::import(py, "inspect") {
+            if inspect
+                .getattr("isasyncgen")
+                .and_then(|f| f.call1((value,)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+            {
+                return "async_generator".to_string();
+            }
+            if inspect
+                .getattr("iscoroutine")
+                .and_then(|f| f.call1((value,)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+            {
+                return "coroutine".to_string();
+            }
+            if inspect
+                .getattr("isgenerator")
+                .and_then(|f| f.call1((value,)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+            {
+                return "generator".to_string();
+            }
+            if inspect
+                .getattr("ismodule")
+                .and_then(|f| f.call1((value,)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+            {
+                return "module".to_string();
+            }
+            if inspect
+                .getattr("isclass")
+                .and_then(|f| f.call1((value,)))
+                .and_then(|v| v.extract::<bool>())
+                .unwrap_or(false)
+            {
+                return "class".to_string();
+            }
+        }
+
+        if self.is_exception_instance(py, value) {
+            return "exception".to_string();
+        }
+        if value.is_callable() {
+            return "callable".to_string();
+        }
+        "object".to_string()
+    }
+
+    fn is_exception_instance(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> bool {
+        let builtins = match PyModule::import(py, "builtins") {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let base_exception = match builtins.getattr("BaseException") {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        value.is_instance(&base_exception).unwrap_or(false)
+    }
+
+    fn type_payload(&self, _py: Python<'_>, value: &Bound<'_, PyAny>) -> Value {
+        let value_type = value.get_type();
+        let name = value_type.name().map(|v| v.to_string()).unwrap_or_default();
+        let module = value_type
+            .getattr("__module__")
+            .and_then(|v| v.extract::<String>())
+            .unwrap_or_default();
+        let qualified_name = value_type
+            .getattr("__qualname__")
+            .and_then(|v| v.extract::<String>())
+            .unwrap_or_else(|_| name.clone());
+        let qualified = if module.is_empty() {
+            qualified_name
+        } else {
+            format!("{module}.{qualified_name}")
+        };
+        serde_json::json!({
+            "name": name,
+            "module": module,
+            "qualified": qualified,
+        })
+    }
+
+    fn doc_payload(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> Value {
+        let doc = match value.getattr("__doc__") {
+            Ok(v) => v,
+            Err(err) => {
+                let exc = self.capture_exception(py, &err).ok();
+                return serde_json::json!({
+                    "text": Value::Null,
+                    "truncated": false,
+                    "original_len": 0,
+                    "doc_error": exc.map(|v| format!("{}: {}", v.exc_type, v.message)).unwrap_or_else(|| "doc error".to_string()),
+                });
+            }
+        };
+
+        if doc.is_none() {
+            return serde_json::json!({"text": Value::Null, "truncated": false, "original_len": 0});
+        }
+
+        let as_string = doc
+            .extract::<String>()
+            .or_else(|_| doc.str().map(|v| v.to_string_lossy().into_owned()));
+        match as_string {
+            Ok(text) => {
+                let (text, truncated, original_len) =
+                    Self::truncate_text(&text, super::capabilities::DOC_MAX_LEN);
+                serde_json::json!({
+                    "text": text,
+                    "truncated": truncated,
+                    "original_len": original_len,
+                })
+            }
+            Err(err) => serde_json::json!({
+                "text": Value::Null,
+                "truncated": false,
+                "original_len": 0,
+                "doc_error": err.to_string(),
+            }),
+        }
+    }
+
+    fn size_payload(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> Option<Value> {
+        let mut object = serde_json::Map::new();
+        if let Ok(length) = value.len() {
+            object.insert("len".to_string(), serde_json::json!(length));
+        }
+        if let Ok(shape) = value.getattr("shape")
+            && !shape.is_none()
+        {
+            let mut shape_values = Vec::new();
+            if let Ok(iter) = shape.try_iter() {
+                for item in iter.flatten() {
+                    shape_values.push(Value::String(self.safe_repr(py, &item).0));
+                }
+            } else {
+                shape_values.push(Value::String(self.safe_repr(py, &shape).0));
+            }
+            object.insert("shape".to_string(), Value::Array(shape_values));
+        }
+        if object.is_empty() {
+            return None;
+        }
+        Some(Value::Object(object))
+    }
+
+    fn sample_payload(
+        &self,
+        _py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        kind: &str,
+    ) -> Option<Value> {
+        if matches!(
+            kind,
+            "generator" | "iterator" | "coroutine" | "async_generator"
+        ) {
+            return None;
+        }
+
+        let mut items = Vec::new();
+        if let Ok(dict) = value.cast::<PyDict>() {
+            for (key, item) in dict.iter() {
+                if items.len() >= super::capabilities::INSPECT_SAMPLE_MAX_ITEMS {
+                    break;
+                }
+                let key_repr = self.safe_repr(_py, &key).0;
+                let item_repr = self.safe_repr(_py, &item).0;
+                items.push(Value::String(format!("{key_repr}: {item_repr}")));
+            }
+        } else if let Ok(iter) = value.try_iter() {
+            for item in iter.flatten() {
+                if items.len() >= super::capabilities::INSPECT_SAMPLE_MAX_ITEMS {
+                    break;
+                }
+                items.push(Value::String(self.safe_repr(_py, &item).0));
+            }
+        } else {
+            return None;
+        }
+
+        let total = value.len().unwrap_or(items.len());
+        Some(serde_json::json!({
+            "items": items,
+            "shown": items.len(),
+            "total": total,
+            "truncated": total > items.len(),
+        }))
+    }
+
+    fn members_payload(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+    ) -> Result<Value, ExceptionInfo> {
+        let builtins = PyModule::import(py, "builtins").map_err(|err| {
+            self.capture_exception(py, &err)
+                .unwrap_or_else(|_| ExceptionInfo {
+                    exc_type: "ImportError".to_string(),
+                    message: "failed to import builtins".to_string(),
+                    traceback: String::new(),
+                })
+        })?;
+        let dir = builtins
+            .getattr("dir")
+            .and_then(|f| f.call1((value,)))
+            .map_err(|err| {
+                self.capture_exception(py, &err)
+                    .unwrap_or_else(|_| ExceptionInfo {
+                        exc_type: "TypeError".to_string(),
+                        message: "dir failed".to_string(),
+                        traceback: String::new(),
+                    })
+            })?;
+        let mut names = dir.extract::<Vec<String>>().map_err(|err| ExceptionInfo {
+            exc_type: "TypeError".to_string(),
+            message: err.to_string(),
+            traceback: err.to_string(),
+        })?;
+        names.sort();
+
+        let inspect = PyModule::import(py, "inspect").ok();
+        let mut dunder_count = 0usize;
+        let mut data = Vec::new();
+        let mut callables = Vec::new();
+        let mut non_dunder_total = 0usize;
+
+        for name in names {
+            if name.starts_with("__") && name.ends_with("__") {
+                dunder_count += 1;
+                continue;
+            }
+            non_dunder_total += 1;
+
+            let attr = if let Some(inspect) = inspect.as_ref() {
+                inspect
+                    .getattr("getattr_static")
+                    .and_then(|f| f.call1((value, name.as_str())))
+                    .ok()
+            } else {
+                None
+            };
+
+            let is_callable = attr.as_ref().map(|v| v.is_callable()).unwrap_or(false);
+            if is_callable {
+                if callables.len() < super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP {
+                    callables.push(Value::String(name));
+                }
+            } else if data.len() < super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP {
+                data.push(Value::String(name));
+            }
+        }
+
+        Ok(serde_json::json!({
+            "data": data,
+            "callables": callables,
+            "dunder_count": dunder_count,
+            "shown_per_group": super::capabilities::INSPECT_MEMBER_MAX_PER_GROUP,
+            "truncated": non_dunder_total > (data.len() + callables.len()),
+        }))
+    }
+
+    fn callable_payload(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> Value {
+        let module = value
+            .getattr("__module__")
+            .ok()
+            .and_then(|v| v.extract::<String>().ok());
+        let inspect = PyModule::import(py, "inspect").ok();
+        let signature = inspect
+            .as_ref()
+            .and_then(|module| module.getattr("signature").ok())
+            .and_then(|f| f.call1((value,)).ok())
+            .and_then(|v| v.str().ok())
+            .map(|v| v.to_string_lossy().into_owned());
+        let doc_text = self
+            .doc_payload(py, value)
+            .get("text")
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        let source = inspect
+            .as_ref()
+            .and_then(|module| module.getattr("getsource").ok())
+            .and_then(|f| f.call1((value,)).ok())
+            .and_then(|v| v.extract::<String>().ok());
+        let (source_preview, source_truncated, source_error) = match source {
+            Some(text) => {
+                let (text, truncated, _) =
+                    Self::truncate_text(&text, super::capabilities::INSPECT_SOURCE_PREVIEW_MAX_LEN);
+                (Value::String(text), Value::Bool(truncated), Value::Null)
+            }
+            None => (
+                Value::Null,
+                Value::Bool(false),
+                Value::String("source unavailable".to_string()),
+            ),
+        };
+
+        let mut payload = serde_json::Map::new();
+        payload.insert("module".to_string(), serde_json::json!(module));
+        payload.insert("signature".to_string(), serde_json::json!(signature));
+        payload.insert("doc".to_string(), doc_text);
+        payload.insert("source_preview".to_string(), source_preview);
+        payload.insert("source_truncated".to_string(), source_truncated);
+        if !source_error.is_null() {
+            payload.insert("source_error".to_string(), source_error);
+        }
+        Value::Object(payload)
+    }
+
+    fn capture_output<F>(&self, py: Python<'_>, operation: F) -> Result<CapturedOutput>
+    where
+        F: FnOnce(Python<'_>) -> PyResult<Option<String>>,
+    {
+        let sys = PyModule::import(py, "sys")?;
+        let io = PyModule::import(py, "io")?;
+        let stdout_buffer = io.getattr("StringIO")?.call0()?;
+        let stderr_buffer = io.getattr("StringIO")?.call0()?;
+        let previous_stdout = sys.getattr("stdout")?.unbind();
+        let previous_stderr = sys.getattr("stderr")?.unbind();
+        sys.setattr("stdout", &stdout_buffer)?;
+        sys.setattr("stderr", &stderr_buffer)?;
+
+        let operation_result = operation(py);
+        let stdout = stdout_buffer
+            .getattr("getvalue")?
+            .call0()?
+            .extract::<String>()?;
+        let stderr = stderr_buffer
+            .getattr("getvalue")?
+            .call0()?
+            .extract::<String>()?;
+
+        sys.setattr("stdout", previous_stdout.bind(py))?;
+        sys.setattr("stderr", previous_stderr.bind(py))?;
+
+        match operation_result {
+            Ok(value_repr) => Ok(CapturedOutput {
+                stdout,
+                stderr,
+                value_repr,
+                exception: None,
+            }),
+            Err(err) => {
+                let exception = self.capture_exception(py, &err)?;
+                self.store_last_exception(Some(exception.clone()))?;
+                Ok(CapturedOutput {
+                    stdout,
+                    stderr,
+                    value_repr: None,
+                    exception: Some(exception),
+                })
+            }
+        }
     }
 }
 
 impl PythonSession {
     fn cap_internal(err: impl std::fmt::Display) -> CapabilityError {
         CapabilityError::Internal(err.to_string())
-    }
-
-    fn cap_invalid_shape(msg: impl Into<String>) -> CapabilityError {
-        CapabilityError::InvalidResultShape(msg.into())
-    }
-
-    fn cap_result_ok(result: &Bound<'_, pyo3::types::PyAny>) -> CapabilityResult<bool> {
-        let dict = Self::cap_cast_dict(result)?;
-        let value = dict
-            .get_item("ok")
-            .map_err(Self::cap_internal)?
-            .ok_or_else(|| Self::cap_invalid_shape("missing ok in helper result"))?;
-        value.extract().map_err(Self::cap_internal)
-    }
-
-    fn cap_dict_string(
-        result: &Bound<'_, pyo3::types::PyAny>,
-        key: &str,
-    ) -> CapabilityResult<String> {
-        let dict = Self::cap_cast_dict(result)?;
-        let value = dict
-            .get_item(key)
-            .map_err(Self::cap_internal)?
-            .ok_or_else(|| Self::cap_invalid_shape(format!("missing {key} in helper result")))?;
-        value.extract().map_err(Self::cap_internal)
-    }
-
-    fn cap_dict_json_value(
-        result: &Bound<'_, pyo3::types::PyAny>,
-        key: &str,
-    ) -> CapabilityResult<Value> {
-        let encoded = Self::cap_dict_string(result, key)?;
-        serde_json::from_str(&encoded).map_err(|err| {
-            Self::cap_invalid_shape(format!("invalid JSON in {key} helper result: {err}"))
-        })
-    }
-
-    fn cap_dict_exception(
-        result: &Bound<'_, pyo3::types::PyAny>,
-    ) -> CapabilityResult<ExceptionInfo> {
-        let dict = Self::cap_cast_dict(result)?;
-        let exception = dict
-            .get_item("exception")
-            .map_err(Self::cap_internal)?
-            .ok_or_else(|| Self::cap_invalid_shape("missing exception in helper result"))?;
-        Self::any_to_exception(exception)
-            .map_err(|err| Self::cap_invalid_shape(format!("invalid exception payload: {err}")))
-    }
-
-    fn cap_cast_dict<'a>(
-        value: &'a Bound<'a, pyo3::types::PyAny>,
-    ) -> CapabilityResult<&'a Bound<'a, PyDict>> {
-        value
-            .cast::<PyDict>()
-            .map_err(|err| Self::cap_invalid_shape(err.to_string()))
     }
 }
 
@@ -351,56 +934,36 @@ impl CapabilityProvider for PythonSession {
     }
 
     fn inspect(&self, expr: &str) -> CapabilityResult<InspectInfo> {
-        Python::attach(|py| -> CapabilityResult<InspectInfo> {
-            let globals = self.globals.bind(py);
-            let result = Self::call_runtime_helper(globals, "_pyaichat_inspect", (expr,))
-                .map_err(Self::cap_internal)?;
-            if !Self::cap_result_ok(&result)? {
-                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
-                    &result,
-                )?));
-            }
-
-            let value = Self::cap_dict_json_value(&result, "inspect_json")?;
-            let type_is_object = value.get("type").is_some_and(Value::is_object);
-            let kind_is_string = value.get("kind").is_some_and(Value::is_string);
-            if !type_is_object || !kind_is_string {
-                return Err(Self::cap_invalid_shape(
-                    "inspect result must contain object type and string kind",
-                ));
-            }
-
-            Ok(InspectInfo { value })
+        Python::attach(|py| {
+            self.inspect_expr(py, expr)
+                .map(|value| InspectInfo { value })
         })
     }
 
     fn eval_expr(&self, expr: &str) -> CapabilityResult<EvalInfo> {
-        Python::attach(|py| -> CapabilityResult<EvalInfo> {
-            let globals = self.globals.bind(py);
-            let result = Self::call_runtime_helper(globals, "_pyaichat_eval_expr", (expr,))
-                .map_err(Self::cap_internal)?;
-            if !Self::cap_result_ok(&result)? {
-                return Err(CapabilityError::PythonException(Self::cap_dict_exception(
-                    &result,
-                )?));
-            }
-
-            Ok(EvalInfo {
-                value_repr: Self::cap_dict_string(&result, "value_repr")?,
-                stdout: Self::cap_dict_string(&result, "stdout")?,
-                stderr: Self::cap_dict_string(&result, "stderr")?,
-            })
+        Python::attach(|py| match self.eval_expr_inner(py, expr) {
+            Ok(result) => Ok(EvalInfo {
+                value_repr: result.value_repr,
+                stdout: result.stdout,
+                stderr: result.stderr,
+            }),
+            Err(exception) => Err(CapabilityError::PythonException(exception)),
         })
     }
 }
 
+struct CapturedOutput {
+    stdout: String,
+    stderr: String,
+    value_repr: Option<String>,
+    exception: Option<ExceptionInfo>,
+}
+
 #[cfg(test)]
 mod tests {
-    use std::ffi::CString;
     use std::sync::{LazyLock, Mutex};
 
     use crate::python::{CapabilityError, CapabilityProvider};
-    use pyo3::prelude::Python;
 
     use super::{InputCompleteness, PythonSession, UserRunResult};
 
@@ -696,23 +1259,6 @@ mod tests {
     }
 
     #[test]
-    fn capability_inspect_timeout_surfaces_as_python_exception() {
-        let session = PythonSession::initialize().expect("python session");
-        session
-            .exec_code("def _with_timeout(fn):\n    raise TimeoutError('inspect timed out')")
-            .expect("override timeout helper");
-        let err =
-            CapabilityProvider::inspect(&session, "42").expect_err("inspect timeout should fail");
-        match err {
-            CapabilityError::PythonException(exc) => {
-                assert_eq!(exc.exc_type, "TimeoutError");
-                assert!(exc.message.contains("inspect timed out"));
-            }
-            other => panic!("expected PythonException, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn capability_inspect_timeout_restores_existing_alarm_handler_and_timer() {
         let _signal_guard = SIGNAL_TEST_MUTEX.lock().expect("lock signal test mutex");
         let session = PythonSession::initialize().expect("python session");
@@ -787,53 +1333,5 @@ signal.signal(signal.SIGALRM, _prev_alarm_handler)"#,
                 .iter()
                 .any(|entry| entry.name.starts_with("_pyaichat_"))
         );
-    }
-
-    #[test]
-    fn capability_invalid_result_shape_surfaces_for_missing_ok() {
-        let session = PythonSession::initialize().expect("python session");
-
-        Python::attach(|py| {
-            let code =
-                CString::new("def _pyaichat_inspect(expr):\n    return {'inspect_json': '{}'}\n")
-                    .expect("python code cstring");
-            let globals = session.globals.bind(py);
-            py.run(code.as_c_str(), Some(globals), Some(globals))
-                .expect("override helper in session globals");
-        });
-
-        let err = CapabilityProvider::inspect(&session, "1 + 1")
-            .expect_err("malformed helper payload should fail");
-
-        match err {
-            CapabilityError::InvalidResultShape(msg) => {
-                assert!(msg.contains("missing ok"));
-            }
-            other => panic!("expected InvalidResultShape, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn capability_inspect_invalid_result_shape_for_missing_kind() {
-        let session = PythonSession::initialize().expect("python session");
-
-        Python::attach(|py| {
-            let code = CString::new(
-                "def _pyaichat_inspect(expr):\n    return {'ok': True, 'inspect_json': '{\"type\": {\"name\": \"int\"}}'}\n",
-            )
-            .expect("python code cstring");
-            let globals = session.globals.bind(py);
-            py.run(code.as_c_str(), Some(globals), Some(globals))
-                .expect("override helper in session globals");
-        });
-
-        let err = CapabilityProvider::inspect(&session, "1 + 1")
-            .expect_err("malformed inspect payload should fail");
-        match err {
-            CapabilityError::InvalidResultShape(msg) => {
-                assert!(msg.contains("inspect result must contain"));
-            }
-            other => panic!("expected InvalidResultShape, got {other:?}"),
-        }
     }
 }
