@@ -216,8 +216,12 @@ struct RawStyleOverride {
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
-        let config_path = discover_config_path()?;
-        let file_config = load_file_config(&config_path)?;
+        Self::load_with_path(None)
+    }
+
+    pub fn load_with_path(config_path_override: Option<&Path>) -> Result<Self> {
+        let (config_path, require_config_file) = resolve_config_path(config_path_override)?;
+        let file_config = load_file_config(&config_path, require_config_file)?;
         dotenvy::dotenv().ok();
 
         let file_api_key = file_config
@@ -247,6 +251,14 @@ impl AppConfig {
     }
 }
 
+fn resolve_config_path(config_path_override: Option<&Path>) -> Result<(PathBuf, bool)> {
+    if let Some(path) = config_path_override {
+        return Ok((path.to_path_buf(), true));
+    }
+
+    Ok((discover_config_path()?, false))
+}
+
 fn discover_config_path() -> Result<PathBuf> {
     if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
         let trimmed = xdg.trim();
@@ -268,8 +280,17 @@ fn discover_config_path() -> Result<PathBuf> {
         .join(CONFIG_FILE_NAME))
 }
 
-fn load_file_config(config_path: &Path) -> Result<Option<RawFileConfig>> {
+fn load_file_config(
+    config_path: &Path,
+    require_config_file: bool,
+) -> Result<Option<RawFileConfig>> {
     if !config_path.is_file() {
+        if require_config_file {
+            bail!(
+                "Failed to load config {}: file does not exist or is not a regular file",
+                config_path.display()
+            );
+        }
         return Ok(None);
     }
 
@@ -501,6 +522,52 @@ gemini_base_url = "https://example.com"
 
         let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
         assert_eq!(cfg.gemini_model, "from_file");
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_path_uses_explicit_config_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("pyaichat");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"gemini_model = "xdg_discovered_model""#,
+        )
+        .expect("write xdg config");
+
+        let explicit_config = tmp.path().join("custom.toml");
+        fs::write(&explicit_config, r#"gemini_model = "explicit_model""#).expect("write config");
+
+        reset_vars();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+
+        let cfg = with_cwd(tmp.path(), || {
+            AppConfig::load_with_path(Some(explicit_config.as_path())).expect("load config")
+        });
+        assert_eq!(cfg.gemini_model, "explicit_model");
+    }
+
+    #[test]
+    #[serial]
+    fn load_with_path_fails_when_explicit_file_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing_path = tmp.path().join("missing.toml");
+
+        reset_vars();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+
+        let err = with_cwd(tmp.path(), || {
+            AppConfig::load_with_path(Some(missing_path.as_path())).expect_err("load should fail")
+        });
+        assert!(
+            err.to_string()
+                .contains("file does not exist or is not a regular file")
+        );
     }
 
     #[test]

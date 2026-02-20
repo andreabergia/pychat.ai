@@ -17,7 +17,11 @@ use python::PythonSession;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = CliArgs::parse();
-    let config = AppConfig::load()?;
+    let config = if let Some(path) = args.config.as_deref() {
+        AppConfig::load_with_path(Some(path))?
+    } else {
+        AppConfig::load()?
+    };
     let python = PythonSession::initialize()?;
     let http = HttpClient::new(
         reqwest::Client::new(),

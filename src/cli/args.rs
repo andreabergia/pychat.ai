@@ -1,15 +1,20 @@
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser, Clone, PartialEq, Eq)]
 #[command(name = "pyaichat")]
 #[command(
     about = "Minimal Python REPL with a conversational assistant",
-    long_about = "Minimal Python REPL with a conversational assistant\n\nConfig file paths probed (first existing file wins):\n  1. $XDG_CONFIG_HOME/pyaichat/config.toml\n  2. ~/.config/pyaichat/config.toml"
+    long_about = "Minimal Python REPL with a conversational assistant\n\nConfig file loading:\n  - --config <path> (explicit file, overrides default path discovery)\n  - Default probe path when --config is not provided:\n    1. $XDG_CONFIG_HOME/pyaichat/config.toml\n    2. ~/.config/pyaichat/config.toml"
 )]
 pub struct CliArgs {
     /// Enable verbose HTTP request/response debug logs.
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Load config from this file path instead of the default discovery path.
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -33,5 +38,16 @@ mod tests {
     fn parse_defaults_to_not_verbose() {
         let args = CliArgs::try_parse_from(["pyaichat"]).expect("should parse");
         assert!(!args.verbose);
+        assert_eq!(args.config, None);
+    }
+
+    #[test]
+    fn parse_config_flag() {
+        let args =
+            CliArgs::try_parse_from(["pyaichat", "--config", "/tmp/custom.toml"]).expect("parse");
+        assert_eq!(
+            args.config.as_deref(),
+            Some(std::path::Path::new("/tmp/custom.toml"))
+        );
     }
 }
