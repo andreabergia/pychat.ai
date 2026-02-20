@@ -1,7 +1,0 @@
----
-source: src/http/client.rs
-expression: "lines.join(\"\\n\")"
----
-[http-debug] < HTTP 200
-[http-debug] <
-[http-debug] < {"message":"abcdefghijkl... <truncated 16 chars>

@@ -8,10 +8,6 @@ use std::path::PathBuf;
     long_about = "Minimal Python REPL with a conversational assistant\n\nConfig file loading:\n  - --config <path> (explicit file, overrides default path discovery)\n  - Default probe path when --config is not provided:\n    1. $XDG_CONFIG_HOME/pyaichat/config.toml\n    2. ~/.config/pyaichat/config.toml"
 )]
 pub struct CliArgs {
-    /// Enable verbose HTTP request/response debug logs.
-    #[arg(short, long)]
-    pub verbose: bool,
-
     /// Load config from this file path instead of the default discovery path.
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
@@ -23,21 +19,8 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parse_verbose_short_flag() {
-        let args = CliArgs::try_parse_from(["pyaichat", "-v"]).expect("should parse");
-        assert!(args.verbose);
-    }
-
-    #[test]
-    fn parse_verbose_long_flag() {
-        let args = CliArgs::try_parse_from(["pyaichat", "--verbose"]).expect("should parse");
-        assert!(args.verbose);
-    }
-
-    #[test]
-    fn parse_defaults_to_not_verbose() {
+    fn parse_defaults() {
         let args = CliArgs::try_parse_from(["pyaichat"]).expect("should parse");
-        assert!(!args.verbose);
         assert_eq!(args.config, None);
     }
 

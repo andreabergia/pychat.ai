@@ -338,7 +338,7 @@ struct GeminiPartResponse {
 #[cfg(test)]
 mod tests {
     use super::GeminiProvider;
-    use crate::http::{client::HttpClient, debug::HttpDebugConfig};
+    use crate::http::client::HttpClient;
     use crate::llm::provider::{
         AssistantInput, AssistantMessage, AssistantPart, AssistantRole, FunctionDeclaration,
         LlmError, LlmProvider, ToolCallingMode,
@@ -384,7 +384,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            HttpClient::new(reqwest::Client::new()),
             Some("test-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -417,7 +417,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            HttpClient::new(reqwest::Client::new()),
             Some("bad-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -460,7 +460,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            HttpClient::new(reqwest::Client::new()),
             Some("test-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -512,7 +512,7 @@ mod tests {
             .await;
 
         let provider = GeminiProvider::new(
-            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            HttpClient::new(reqwest::Client::new()),
             Some("test-key".to_string()),
             "test-model".to_string(),
             server.uri(),
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn new_requires_api_key() {
         let err = GeminiProvider::new(
-            HttpClient::new(reqwest::Client::new(), HttpDebugConfig::disabled()),
+            HttpClient::new(reqwest::Client::new()),
             None,
             "test-model".to_string(),
             "https://example.com".to_string(),
