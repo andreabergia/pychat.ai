@@ -13,6 +13,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
+use serde_json::Value;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
@@ -39,7 +40,8 @@ enum OutputKind {
     PythonTraceback,
     AssistantText,
     AssistantWaiting,
-    AssistantProgress,
+    AssistantProgressRequest,
+    AssistantProgressResult,
     SystemInfo,
     SystemError,
 }
@@ -67,16 +69,8 @@ enum AssistantTurnState {
 
 #[derive(Debug, Clone)]
 enum AssistantStepEvent {
-    ToolRequest {
-        id: Option<String>,
-        name: String,
-        args_preview: String,
-    },
-    ToolResult {
-        id: Option<String>,
-        name: String,
-        response_preview: String,
-    },
+    ToolRequest { text: String },
+    ToolResult { text: String },
 }
 
 #[derive(Debug, Clone)]
@@ -237,11 +231,12 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             OutputKind::AssistantText => Style::default().fg(Color::Rgb(219, 75, 75)),
             OutputKind::AssistantWaiting => Style::default()
-                .fg(Color::Rgb(86, 95, 137))
+                .fg(Color::Rgb(206, 120, 120))
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            OutputKind::AssistantProgressRequest => Style::default()
+                .fg(Color::Rgb(138, 138, 138))
                 .add_modifier(Modifier::ITALIC),
-            OutputKind::AssistantProgress => Style::default()
-                .fg(Color::Rgb(147, 153, 178))
-                .add_modifier(Modifier::ITALIC),
+            OutputKind::AssistantProgressResult => Style::default().fg(Color::Rgb(138, 138, 138)),
             OutputKind::SystemInfo => Style::default().fg(Color::Rgb(86, 95, 137)),
             OutputKind::SystemError => Style::default()
                 .fg(Color::Rgb(247, 118, 142))
@@ -493,31 +488,25 @@ async fn submit_current_line(
                     }
                     AgentProgressEvent::ToolRequest {
                         step: _,
-                        id,
                         name,
                         args_json,
+                        id: _,
                     } => {
                         if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
-                            let args_preview = compact_json(&args_json);
                             turn.events.push(AssistantStepEvent::ToolRequest {
-                                id,
-                                name,
-                                args_preview,
+                                text: format_tool_request_line(&name, &args_json),
                             });
                         }
                     }
                     AgentProgressEvent::ToolResult {
                         step: _,
-                        id,
                         name,
                         response_json,
+                        id: _,
                     } => {
                         if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
-                            let response_preview = compact_json(&response_json);
                             turn.events.push(AssistantStepEvent::ToolResult {
-                                id,
-                                name,
-                                response_preview,
+                                text: format_tool_result_line(&name, &response_json),
                             });
                         }
                     }
@@ -671,6 +660,7 @@ fn render_assistant_turn_lines(
     turn: &AssistantTurn,
     show_assistant_steps: bool,
 ) -> Vec<Line<'static>> {
+    const THINKING_BLOCK_PADDING: &str = "  ";
     let mut lines = Vec::new();
 
     lines.push(Line::from(vec![
@@ -681,55 +671,32 @@ fn render_assistant_turn_lines(
         ),
     ]));
 
-    if matches!(turn.state, AssistantTurnState::InFlight) {
-        lines.push(Line::from(Span::styled(
-            "waiting...",
-            theme.output_style(OutputKind::AssistantWaiting),
-        )));
-    }
-
     if show_assistant_steps {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw(THINKING_BLOCK_PADDING),
+            Span::styled(
+                "Thinking...",
+                theme.output_style(OutputKind::AssistantWaiting),
+            ),
+        ]));
         for event in &turn.events {
             match event {
-                AssistantStepEvent::ToolRequest {
-                    id,
-                    name,
-                    args_preview,
-                } => {
-                    let text = format!(
-                        "model requested tool {}{} {}",
-                        name,
-                        id.as_deref()
-                            .map(|value| format!(" ({value})"))
-                            .unwrap_or_default(),
-                        args_preview,
-                    );
+                AssistantStepEvent::ToolRequest { text } => {
                     lines.push(Line::from(Span::styled(
-                        text,
-                        theme.output_style(OutputKind::AssistantProgress),
+                        format!("{THINKING_BLOCK_PADDING}{text}"),
+                        theme.output_style(OutputKind::AssistantProgressRequest),
                     )));
                 }
-                AssistantStepEvent::ToolResult {
-                    id,
-                    name,
-                    response_preview,
-                } => {
-                    let text = format!(
-                        "tool result {}{} {}",
-                        name,
-                        id.as_deref()
-                            .map(|value| format!(" ({value})"))
-                            .unwrap_or_default(),
-                        response_preview,
-                    );
+                AssistantStepEvent::ToolResult { text } => {
                     lines.push(Line::from(Span::styled(
-                        text,
-                        theme.output_style(OutputKind::AssistantProgress),
+                        format!("{THINKING_BLOCK_PADDING}{text}"),
+                        theme.output_style(OutputKind::AssistantProgressResult),
                     )));
-                    lines.push(Line::from(""));
                 }
             }
         }
+        lines.push(Line::from(""));
     }
 
     match &turn.state {
@@ -763,10 +730,106 @@ fn split_output_lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
-fn compact_json(value: &serde_json::Value) -> String {
-    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "<invalid json>".to_string());
-    let mut chars = serialized.chars();
-    let preview: String = chars.by_ref().take(120).collect();
+fn format_tool_request_line(name: &str, args_json: &Value) -> String {
+    match name {
+        "list_globals" => "-> Listing globals".to_string(),
+        "inspect" => format!(
+            "-> Inspecting: {}",
+            extract_expr_preview(args_json).unwrap_or_else(|| "<missing expr>".to_string())
+        ),
+        "eval_expr" => format!(
+            "-> Evaluating: {}",
+            extract_expr_preview(args_json).unwrap_or_else(|| "<missing expr>".to_string())
+        ),
+        _ => format!("-> Calling tool: {name}"),
+    }
+}
+
+fn format_tool_result_line(name: &str, response_json: &Value) -> String {
+    if !response_json
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return format_tool_error_line(name, response_json);
+    }
+
+    let Some(result) = response_json.get("result") else {
+        return format!("Tool completed: {name}");
+    };
+
+    match name {
+        "list_globals" => {
+            let count = result
+                .get("globals")
+                .and_then(Value::as_array)
+                .map_or(0, |globals| globals.len());
+            format!("<- Found {count} globals")
+        }
+        "inspect" => {
+            let info = result
+                .get("type")
+                .and_then(|ty| ty.get("name"))
+                .and_then(Value::as_str)
+                .or_else(|| result.get("kind").and_then(Value::as_str))
+                .unwrap_or("value");
+            format!("<- Inspection complete: {}", preview_text(info, 80))
+        }
+        "eval_expr" => {
+            let value_repr = result
+                .get("value_repr")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            format!("<- Evaluated: {}", preview_text(value_repr, 80))
+        }
+        _ => format!("<- Tool completed: {name}"),
+    }
+}
+
+fn format_tool_error_line(name: &str, response_json: &Value) -> String {
+    let (code, message) = response_json
+        .get("error")
+        .and_then(Value::as_object)
+        .map(|error| {
+            let code = error
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("error")
+                .to_string();
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("tool failed")
+                .to_string();
+            (code, message)
+        })
+        .unwrap_or_else(|| ("error".to_string(), "tool failed".to_string()));
+    format!(
+        "<- Tool error ({name}): {code}: {}",
+        preview_text(&message, 100)
+    )
+}
+
+fn extract_expr_preview(args_json: &Value) -> Option<String> {
+    args_json
+        .as_object()
+        .and_then(|args| args.get("expr"))
+        .and_then(Value::as_str)
+        .map(|expr| preview_text(expr, 80))
+}
+
+fn preview_text(value: &str, max_len: usize) -> String {
+    let normalized = normalize_whitespace(value);
+    truncate_chars(&normalized, max_len)
+}
+
+fn normalize_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(value: &str, max_len: usize) -> String {
+    let mut chars = value.chars();
+    let preview: String = chars.by_ref().take(max_len).collect();
     if chars.next().is_some() {
         format!("{preview}...")
     } else {
@@ -864,8 +927,9 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
 mod tests {
     use super::{
         AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode, Theme,
-        append_newline_with_indent, compact_json, input_cursor_position, last_line_indent,
-        mode_status_text, prompt_for, render_assistant_turn_lines, resolve_color_enabled_with,
+        append_newline_with_indent, format_tool_error_line, format_tool_request_line,
+        format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
+        preview_text, prompt_for, render_assistant_turn_lines, resolve_color_enabled_with,
         split_output_lines, toggle_mode,
     };
     use serde_json::json;
@@ -875,14 +939,10 @@ mod tests {
             prompt: "inspect x".to_string(),
             events: vec![
                 AssistantStepEvent::ToolRequest {
-                    id: Some("call_1".to_string()),
-                    name: "inspect".to_string(),
-                    args_preview: compact_json(&json!({"expr":"x"})),
+                    text: "-> Inspecting: x".to_string(),
                 },
                 AssistantStepEvent::ToolResult {
-                    id: Some("call_1".to_string()),
-                    name: "inspect".to_string(),
-                    response_preview: compact_json(&json!({"ok":true,"kind":"number"})),
+                    text: "<- Inspection complete: int".to_string(),
                 },
             ],
             state: AssistantTurnState::CompletedText("x is an int".to_string()),
@@ -936,11 +996,11 @@ mod tests {
     }
 
     #[test]
-    fn compact_json_truncates_long_values() {
-        let long = json!({"x":"a".repeat(200)});
-        let text = compact_json(&long);
-        assert!(text.ends_with("..."));
-        assert!(text.len() <= 123);
+    fn preview_text_truncates_and_normalizes_whitespace() {
+        let text = preview_text("a  \n\t b", 3);
+        assert_eq!(text, "a b");
+        let text = preview_text(&"x".repeat(20), 10);
+        assert_eq!(text, format!("{}...", "x".repeat(10)));
     }
 
     #[test]
@@ -989,21 +1049,31 @@ mod tests {
         assert!(
             !lines
                 .iter()
-                .any(|line| line.starts_with("model requested tool"))
+                .any(|line| line.starts_with("  -> Inspecting:"))
         );
-        assert!(!lines.iter().any(|line| line.starts_with("tool result")));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("  <- Inspection complete:"))
+        );
+        assert!(!lines.iter().any(|line| line == "  Thinking..."));
     }
 
     #[test]
     fn render_assistant_turn_shows_steps_when_toggle_on() {
         let turn = completed_turn_fixture();
         let lines = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
+        assert!(lines.iter().any(|line| line == "  Thinking..."));
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("model requested tool"))
+                .any(|line| line.starts_with("  -> Inspecting:"))
         );
-        assert!(lines.iter().any(|line| line.starts_with("tool result")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("  <- Inspection complete:"))
+        );
         assert!(lines.iter().any(|line| line == "x is an int"));
     }
 
@@ -1020,23 +1090,21 @@ mod tests {
         assert!(
             with_steps
                 .iter()
-                .any(|line| line.starts_with("tool result"))
+                .any(|line| line.starts_with("  <- Inspection complete:"))
         );
         assert!(
             !without_steps
                 .iter()
-                .any(|line| line.starts_with("tool result"))
+                .any(|line| line.starts_with("  <- Inspection complete:"))
         );
     }
 
     #[test]
-    fn inflight_turn_shows_waiting_and_optional_steps() {
+    fn inflight_turn_shows_thinking_header_and_optional_steps() {
         let turn = AssistantTurn {
             prompt: "inspect y".to_string(),
             events: vec![AssistantStepEvent::ToolRequest {
-                id: None,
-                name: "inspect".to_string(),
-                args_preview: compact_json(&json!({"expr":"y"})),
+                text: "-> Inspecting: y".to_string(),
             }],
             state: AssistantTurnState::InFlight,
         };
@@ -1046,24 +1114,73 @@ mod tests {
             &turn,
             false,
         ));
-        assert!(hidden.iter().any(|line| line == "waiting..."));
         assert!(
             !hidden
                 .iter()
-                .any(|line| line.starts_with("model requested tool"))
+                .any(|line| line.starts_with("  -> Inspecting:"))
         );
+        assert!(!hidden.iter().any(|line| line == "  Thinking..."));
 
         let shown = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
-        assert!(shown.iter().any(|line| line == "waiting..."));
+        assert!(shown.iter().any(|line| line == "  Thinking..."));
         assert!(
             shown
                 .iter()
-                .any(|line| line.starts_with("model requested tool"))
+                .any(|line| line.starts_with("  -> Inspecting:"))
         );
     }
 
     #[test]
-    fn assistant_error_replaces_waiting_semantics() {
+    fn format_tool_request_line_uses_semantic_labels() {
+        assert_eq!(
+            format_tool_request_line("list_globals", &json!({})),
+            "-> Listing globals"
+        );
+        assert_eq!(
+            format_tool_request_line("inspect", &json!({"expr":"value [ 0 ]"})),
+            "-> Inspecting: value [ 0 ]"
+        );
+        assert_eq!(
+            format_tool_request_line("eval_expr", &json!({"expr":"a + b"})),
+            "-> Evaluating: a + b"
+        );
+    }
+
+    #[test]
+    fn format_tool_result_line_summarizes_known_tools() {
+        assert_eq!(
+            format_tool_result_line(
+                "list_globals",
+                &json!({"ok":true,"result":{"globals":[{"name":"a"},{"name":"b"}]}})
+            ),
+            "<- Found 2 globals"
+        );
+        assert_eq!(
+            format_tool_result_line(
+                "inspect",
+                &json!({"ok":true,"result":{"type":{"name":"dict"}}})
+            ),
+            "<- Inspection complete: dict"
+        );
+        assert_eq!(
+            format_tool_result_line("eval_expr", &json!({"ok":true,"result":{"value_repr":"3"}})),
+            "<- Evaluated: 3"
+        );
+    }
+
+    #[test]
+    fn format_tool_error_line_includes_code_and_reason() {
+        assert_eq!(
+            format_tool_error_line(
+                "inspect",
+                &json!({"ok":false,"error":{"code":"python_exception","message":"NameError: x"}})
+            ),
+            "<- Tool error (inspect): python_exception: NameError: x"
+        );
+    }
+
+    #[test]
+    fn assistant_error_renders_message() {
         let turn = AssistantTurn {
             prompt: "inspect z".to_string(),
             events: Vec::new(),
@@ -1080,6 +1197,35 @@ mod tests {
                 .iter()
                 .any(|line| line == "Assistant request failed: boom")
         );
-        assert!(!lines.iter().any(|line| line == "waiting..."));
+    }
+
+    #[test]
+    fn thinking_block_has_blank_line_padding() {
+        let turn = completed_turn_fixture();
+        let lines = text_lines(render_assistant_turn_lines(&Theme::new(false), &turn, true));
+        let thinking_idx = lines
+            .iter()
+            .position(|line| line == "  Thinking...")
+            .expect("thinking header");
+        let request_idx = lines
+            .iter()
+            .position(|line| line.starts_with("  -> Inspecting:"))
+            .expect("request line");
+        let result_idx = lines
+            .iter()
+            .position(|line| line.starts_with("  <- Inspection complete:"))
+            .expect("result line");
+
+        assert!(thinking_idx > 0, "thinking line should not be first");
+        assert_eq!(lines[thinking_idx - 1], "");
+        assert!(
+            thinking_idx < request_idx,
+            "thinking header should precede requests"
+        );
+        assert!(
+            result_idx + 1 < lines.len(),
+            "result line should not be last"
+        );
+        assert_eq!(lines[result_idx + 1], "");
     }
 }
