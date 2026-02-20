@@ -17,7 +17,7 @@ use python::PythonSession;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = CliArgs::parse();
-    let config = AppConfig::from_env();
+    let config = AppConfig::load()?;
     let python = PythonSession::initialize()?;
     let http = HttpClient::new(
         reqwest::Client::new(),
