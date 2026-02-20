@@ -659,6 +659,38 @@ mod tests {
     }
 
     #[test]
+    fn capability_inspect_members_avoids_property_side_effects() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .exec_code(
+                "class SideEffect:\n    hits = 0\n    @property\n    def boom(self):\n        SideEffect.hits += 1\n        return 1\nobj = SideEffect()",
+            )
+            .expect("seed side-effect property");
+
+        let inspect = CapabilityProvider::inspect(&session, "obj").expect("inspect");
+        assert!(
+            inspect.value["members"]["data"]
+                .as_array()
+                .is_some_and(|members| members.iter().any(|member| member == "boom"))
+        );
+
+        let hits = session
+            .eval_expr("SideEffect.hits")
+            .expect("read hit counter");
+        assert_eq!(hits.value_repr, "0");
+    }
+
+    #[test]
+    fn capability_inspect_large_range_sampling_stays_bounded() {
+        let session = PythonSession::initialize().expect("python session");
+        let inspect = CapabilityProvider::inspect(&session, "range(10**12)").expect("inspect");
+        assert_eq!(inspect.value["kind"], "sequence");
+        assert_eq!(inspect.value["sample"]["shown"], 16);
+        assert_eq!(inspect.value["sample"]["total"], 1_000_000_000_000_u64);
+        assert_eq!(inspect.value["sample"]["truncated"], true);
+    }
+
+    #[test]
     fn capability_inspect_timeout_surfaces_as_python_exception() {
         let session = PythonSession::initialize().expect("python session");
         let timeout_supported = session
@@ -689,6 +721,53 @@ mod tests {
             }
             other => panic!("expected PythonException, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn capability_inspect_timeout_restores_existing_alarm_handler_and_timer() {
+        let session = PythonSession::initialize().expect("python session");
+        let timeout_supported = session
+            .eval_expr("hasattr(__import__('signal'), 'SIGALRM') and hasattr(__import__('signal'), 'ITIMER_REAL')")
+            .expect("check signal")
+            .value_repr;
+        let runs_on_main_thread = session
+            .eval_expr(
+                "__import__('threading').current_thread() is __import__('threading').main_thread()",
+            )
+            .expect("check thread")
+            .value_repr;
+        if timeout_supported != "True" || runs_on_main_thread != "True" {
+            return;
+        }
+
+        session
+            .exec_code(
+                "import signal\n\
+def _test_alarm_handler(_signum, _frame):\n\
+    return None\n\
+_prev_alarm_handler = signal.getsignal(signal.SIGALRM)\n\
+signal.signal(signal.SIGALRM, _test_alarm_handler)\n\
+signal.setitimer(signal.ITIMER_REAL, 0.4)",
+            )
+            .expect("seed alarm state");
+
+        CapabilityProvider::inspect(&session, "42").expect("inspect");
+        let check = session
+            .eval_expr(
+                "import signal\n\
+_remaining = signal.getitimer(signal.ITIMER_REAL)[0]\n\
+(signal.getsignal(signal.SIGALRM) is _test_alarm_handler) and (_remaining > 0.2)",
+            )
+            .expect("check restored alarm state");
+        assert_eq!(check.value_repr, "True");
+
+        session
+            .exec_code(
+                "import signal\n\
+                 signal.setitimer(signal.ITIMER_REAL, 0)\n\
+                 signal.signal(signal.SIGALRM, _prev_alarm_handler)",
+            )
+            .expect("restore alarm state");
     }
 
     #[test]

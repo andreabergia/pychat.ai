@@ -7,6 +7,7 @@ import json
 import linecache
 import signal
 import threading
+import time
 import traceback
 
 _PYAICHAT_LAST_EXCEPTION = None
@@ -173,27 +174,23 @@ def _size_payload(value):
 
 def _sample_items_from_mapping(value):
     items = []
-    total = 0
     for key, item in value.items():
-        total += 1
         if len(items) >= _SAMPLE_MAX_ITEMS:
-            continue
+            break
         key_repr, _ = _safe_repr(key)
         item_repr, _ = _safe_repr(item)
         items.append(f"{key_repr}: {item_repr}")
-    return items, total
+    return items
 
 
 def _sample_items_from_iterable(value):
     items = []
-    total = 0
     for item in value:
-        total += 1
         if len(items) >= _SAMPLE_MAX_ITEMS:
-            continue
+            break
         item_repr, _ = _safe_repr(item)
         items.append(item_repr)
-    return items, total
+    return items
 
 
 def _sample_payload(value, kind):
@@ -202,9 +199,9 @@ def _sample_payload(value, kind):
 
     try:
         if isinstance(value, dict):
-            items, total = _sample_items_from_mapping(value)
+            items = _sample_items_from_mapping(value)
         elif isinstance(value, (list, tuple, range, set, frozenset)):
-            items, total = _sample_items_from_iterable(value)
+            items = _sample_items_from_iterable(value)
         else:
             return None
     except BaseException as exc:
@@ -215,6 +212,12 @@ def _sample_payload(value, kind):
             "truncated": False,
             "sample_error": f"{type(exc).__name__}: {exc}",
         }
+
+    total = len(items)
+    try:
+        total = len(value)
+    except BaseException:
+        pass
 
     return {
         "items": items,
@@ -247,7 +250,7 @@ def _members_payload(value):
             continue
 
         try:
-            attr = getattr(value, name)
+            attr = pyinspect.getattr_static(value, name)
         except BaseException:
             if len(data) < _MEMBER_MAX_PER_GROUP:
                 data.append(name)
@@ -333,10 +336,18 @@ def _limits_payload():
 def _with_timeout(fn):
     if not hasattr(signal, "SIGALRM"):
         return fn()
+    if not hasattr(signal, "ITIMER_REAL"):
+        return fn()
+    if not hasattr(signal, "getitimer"):
+        return fn()
+    if not hasattr(signal, "setitimer"):
+        return fn()
     if threading.current_thread() is not threading.main_thread():
         return fn()
 
     previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    timer_start = time.monotonic()
 
     def _timeout_handler(_signum, _frame):
         raise TimeoutError("inspect timed out")
@@ -346,7 +357,10 @@ def _with_timeout(fn):
     try:
         return fn()
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
+        elapsed = time.monotonic() - timer_start
+        previous_delay, previous_interval = previous_timer
+        restored_delay = max(0.0, previous_delay - elapsed)
+        signal.setitimer(signal.ITIMER_REAL, restored_delay, previous_interval)
         signal.signal(signal.SIGALRM, previous_handler)
 
 
