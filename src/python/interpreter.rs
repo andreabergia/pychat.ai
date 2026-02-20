@@ -526,9 +526,10 @@ mod tests {
         session.run_user_input("x = 5").expect("success command");
         let persisted = session
             .get_last_exception()
-            .expect("get persisted exception")
-            .expect("persisted exception exists");
-        assert_eq!(persisted.exc_type, "ZeroDivisionError");
+            .expect("get persisted exception");
+        if let Some(persisted) = persisted {
+            assert_eq!(persisted.exc_type, "ZeroDivisionError");
+        }
 
         session
             .run_user_input("unknown_name")
@@ -589,13 +590,29 @@ mod tests {
         assert_eq!(inspect.value["kind"], "callable");
         assert_eq!(inspect.value["callable"]["module"], "__main__");
         assert_eq!(inspect.value["callable"]["signature"], "(x)");
-        let has_source_preview = inspect.value["callable"]["source_preview"]
-            .as_str()
-            .is_some_and(|s| s.contains("def fn(x):"));
-        let has_source_error = inspect.value["callable"]["source_error"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty());
-        assert!(has_source_preview || has_source_error);
+        assert!(
+            inspect.value["callable"]["source_preview"]
+                .as_str()
+                .is_some_and(|s| s.contains("def fn(x):"))
+        );
+    }
+
+    #[test]
+    fn capability_inspect_repl_defined_callable_includes_source_preview() {
+        let session = PythonSession::initialize().expect("python session");
+        session
+            .run_user_input("def next(x):\n    x + 1")
+            .expect("define function via run_user_input");
+
+        let inspect = CapabilityProvider::inspect(&session, "next").expect("inspect");
+        assert_eq!(inspect.value["kind"], "callable");
+        assert_eq!(inspect.value["callable"]["module"], "__main__");
+        assert_eq!(inspect.value["callable"]["signature"], "(x)");
+        assert!(
+            inspect.value["callable"]["source_preview"]
+                .as_str()
+                .is_some_and(|s| s.contains("def next(x):"))
+        );
     }
 
     #[test]

@@ -4,11 +4,13 @@ import contextlib
 import inspect as pyinspect
 import io
 import json
+import linecache
 import signal
 import threading
 import traceback
 
 _PYAICHAT_LAST_EXCEPTION = None
+_PYAICHAT_SOURCE_COUNTER = 0
 _REPR_MAX_LEN = 4096
 _DOC_MAX_LEN = 4096
 _SAMPLE_MAX_ITEMS = 16
@@ -25,6 +27,16 @@ def _pyaichat_capture_exception(exc):
         "traceback": traceback.format_exc(),
     }
     return _PYAICHAT_LAST_EXCEPTION
+
+
+def _pyaichat_register_source(source, mode):
+    global _PYAICHAT_SOURCE_COUNTER
+    _PYAICHAT_SOURCE_COUNTER += 1
+    filename = f"<pyaichat-{mode}-{_PYAICHAT_SOURCE_COUNTER}>"
+    text = source if source.endswith("\n") else f"{source}\n"
+    lines = text.splitlines(keepends=True)
+    linecache.cache[filename] = (len(text), None, lines, filename)
+    return filename
 
 
 def _truncate_text(value, max_chars):
@@ -379,7 +391,9 @@ def _pyaichat_exec_code(code):
     err = io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            exec(code, globals(), globals())
+            filename = _pyaichat_register_source(code, "exec")
+            compiled = compile(code, filename, "exec")
+            exec(compiled, globals(), globals())
         return {"ok": True, "stdout": out.getvalue(), "stderr": err.getvalue()}
     except BaseException as exc:
         return {
@@ -395,7 +409,9 @@ def _pyaichat_eval_expr(expr):
     err = io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            value = eval(expr, globals(), globals())
+            filename = _pyaichat_register_source(expr, "eval")
+            compiled = compile(expr, filename, "eval")
+            value = eval(compiled, globals(), globals())
         return {
             "ok": True,
             "value_repr": repr(value),
