@@ -15,12 +15,16 @@ fn binary_help_smoke_test() {
         "help output should include app description"
     );
     assert!(
+        stdout.contains("--config <PATH>"),
+        "help output should include explicit config flag"
+    );
+    assert!(
         stdout.contains("$XDG_CONFIG_HOME/pyaichat/config.toml"),
-        "help output should include XDG config probe path"
+        "help output should include XDG default config path"
     );
     assert!(
         stdout.contains("~/.config/pyaichat/config.toml"),
-        "help output should include home config probe path"
+        "help output should include home default config path"
     );
 }
 

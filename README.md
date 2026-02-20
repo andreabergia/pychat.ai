@@ -4,10 +4,14 @@ Minimal Python REPL with a conversational assistant that can inspect live runtim
 
 ## Configuration
 
+Use `--config /path/to/config.toml` to load a specific config file.
+
 PyAIChat reads optional config from:
 
 1. `$XDG_CONFIG_HOME/pyaichat/config.toml`
 2. `~/.config/pyaichat/config.toml` when `XDG_CONFIG_HOME` is not set
+
+The default probe path is used only when `--config` is not provided.
 
 Unknown keys and invalid values fail startup with an actionable error.
 
