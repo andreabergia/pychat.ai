@@ -1,4 +1,6 @@
 use crate::agent::{AgentConfig, AgentProgressEvent, run_question_with_events};
+use crate::cli::theme::Theme;
+use crate::config::{ThemeConfig, ThemeToken};
 use crate::llm::gemini::GeminiProvider;
 use crate::python::{InputCompleteness, PythonSession, UserRunResult};
 use anyhow::Result;
@@ -10,7 +12,6 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 use serde_json::Value;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub python: PythonSession,
     pub llm: Option<GeminiProvider>,
     pub agent_config: AgentConfig,
+    pub theme_config: ThemeConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +89,7 @@ struct UiState {
 }
 
 impl UiState {
-    fn new(mode: Mode, color_enabled: bool) -> Self {
+    fn new(mode: Mode, color_enabled: bool, theme_config: &ThemeConfig) -> Self {
         Self {
             mode,
             python_input: String::new(),
@@ -97,7 +99,7 @@ impl UiState {
             history_index: None,
             timeline: Vec::new(),
             should_quit: false,
-            theme: Theme::new(color_enabled),
+            theme: Theme::from_config(color_enabled, theme_config),
         }
     }
 
@@ -189,81 +191,9 @@ impl UiState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Theme {
-    enabled: bool,
-}
-
-impl Theme {
-    fn new(enabled: bool) -> Self {
-        Self { enabled }
-    }
-
-    fn prompt_style(&self, mode: Mode) -> Style {
-        if !self.enabled {
-            return Style::default().add_modifier(Modifier::BOLD);
-        }
-
-        match mode {
-            Mode::Python => Style::default()
-                .fg(Color::Rgb(158, 206, 106))
-                .add_modifier(Modifier::BOLD),
-            Mode::Assistant => Style::default()
-                .fg(Color::Rgb(219, 75, 75))
-                .add_modifier(Modifier::BOLD),
-        }
-    }
-
-    fn output_style(&self, kind: OutputKind) -> Style {
-        if !self.enabled {
-            return Style::default();
-        }
-
-        match kind {
-            OutputKind::UserInputPython | OutputKind::UserInputAssistant => {
-                Style::default().fg(Color::White)
-            }
-            OutputKind::PythonValue => Style::default().fg(Color::Rgb(158, 206, 106)),
-            OutputKind::PythonStdout => Style::default().fg(Color::Rgb(192, 202, 245)),
-            OutputKind::PythonStderr => Style::default().fg(Color::Rgb(255, 158, 100)),
-            OutputKind::PythonTraceback => Style::default()
-                .fg(Color::Rgb(247, 118, 142))
-                .add_modifier(Modifier::BOLD),
-            OutputKind::AssistantText => Style::default().fg(Color::Rgb(219, 75, 75)),
-            OutputKind::AssistantWaiting => Style::default()
-                .fg(Color::Rgb(206, 120, 120))
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            OutputKind::AssistantProgressRequest => Style::default()
-                .fg(Color::Rgb(138, 138, 138))
-                .add_modifier(Modifier::ITALIC),
-            OutputKind::AssistantProgressResult => Style::default().fg(Color::Rgb(138, 138, 138)),
-            OutputKind::SystemInfo => Style::default().fg(Color::Rgb(86, 95, 137)),
-            OutputKind::SystemError => Style::default()
-                .fg(Color::Rgb(247, 118, 142))
-                .add_modifier(Modifier::BOLD),
-        }
-    }
-
-    fn status_style(&self) -> Style {
-        if self.enabled {
-            Style::default().fg(Color::Rgb(86, 95, 137))
-        } else {
-            Style::default()
-        }
-    }
-
-    fn input_block_style(&self) -> Style {
-        if self.enabled {
-            Style::default().bg(Color::Rgb(22, 22, 30)).fg(Color::White)
-        } else {
-            Style::default()
-        }
-    }
-}
-
 pub async fn run_repl(state: &mut AppState) -> Result<()> {
     let color_enabled = resolve_color_enabled();
-    let mut ui_state = UiState::new(state.mode, color_enabled);
+    let mut ui_state = UiState::new(state.mode, color_enabled, &state.theme_config);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -576,16 +506,16 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     let mut rendered_lines = Vec::with_capacity(input_lines.len());
     for (idx, line) in input_lines.into_iter().enumerate() {
         let prompt_span = if idx == 0 {
-            Span::styled(prompt, ui_state.theme.prompt_style(ui_state.mode))
+            Span::styled(prompt, ui_state.theme.style(prompt_token_for(ui_state.mode)))
         } else {
             Span::styled(
                 prompt_padding.clone(),
-                ui_state.theme.prompt_style(ui_state.mode),
+                ui_state.theme.style(prompt_token_for(ui_state.mode)),
             )
         };
         rendered_lines.push(Line::from(vec![
             prompt_span,
-            Span::styled(line, ui_state.theme.input_block_style()),
+            Span::styled(line, ui_state.theme.style(ThemeToken::InputBlock)),
         ]));
     }
 
@@ -593,18 +523,18 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .block(
             Block::default()
                 .padding(Padding::new(1, 1, 1, 1))
-                .style(ui_state.theme.input_block_style()),
+                .style(ui_state.theme.style(ThemeToken::InputBlock)),
         )
         .wrap(Wrap { trim: false })
         .scroll((input_scroll, 0));
     frame.render_widget(input_widget, chunks[1]);
 
     let mode_text = mode_status_text(ui_state.mode, ui_state.show_assistant_steps);
-    let status_left = Paragraph::new(mode_text).style(ui_state.theme.status_style());
+    let status_left = Paragraph::new(mode_text).style(ui_state.theme.style(ThemeToken::Status));
     frame.render_widget(status_left, chunks[2]);
 
     let status_right = Paragraph::new("PyAiChat")
-        .style(ui_state.theme.status_style())
+        .style(ui_state.theme.style(ThemeToken::Status))
         .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(status_right, chunks[2]);
 
@@ -626,7 +556,7 @@ fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
     if ui_state.timeline.is_empty() {
         return vec![Line::from(Span::styled(
             "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
-            ui_state.theme.output_style(OutputKind::SystemInfo),
+            ui_state.theme.style(output_token_for(OutputKind::SystemInfo)),
         ))];
     }
 
@@ -634,15 +564,15 @@ fn render_timeline_lines(ui_state: &UiState) -> Vec<Line<'static>> {
     for entry in &ui_state.timeline {
         match entry {
             TimelineEntry::UserInputPython(text) => lines.push(Line::from(vec![
-                Span::styled("py> ", ui_state.theme.prompt_style(Mode::Python)),
+                Span::styled("py> ", ui_state.theme.style(ThemeToken::PythonPrompt)),
                 Span::styled(
                     text.clone(),
-                    ui_state.theme.output_style(OutputKind::UserInputPython),
+                    ui_state.theme.style(output_token_for(OutputKind::UserInputPython)),
                 ),
             ])),
             TimelineEntry::OutputLine { kind, text } => lines.push(Line::from(Span::styled(
                 text.clone(),
-                ui_state.theme.output_style(*kind),
+                ui_state.theme.style(output_token_for(*kind)),
             ))),
             TimelineEntry::AssistantTurn(turn) => lines.extend(render_assistant_turn_lines(
                 &ui_state.theme,
@@ -664,10 +594,10 @@ fn render_assistant_turn_lines(
     let mut lines = Vec::new();
 
     lines.push(Line::from(vec![
-        Span::styled("ai> ", theme.prompt_style(Mode::Assistant)),
+        Span::styled("ai> ", theme.style(ThemeToken::AssistantPrompt)),
         Span::styled(
             turn.prompt.clone(),
-            theme.output_style(OutputKind::UserInputAssistant),
+            theme.style(output_token_for(OutputKind::UserInputAssistant)),
         ),
     ]));
 
@@ -677,7 +607,7 @@ fn render_assistant_turn_lines(
             Span::raw(THINKING_BLOCK_PADDING),
             Span::styled(
                 "Thinking...",
-                theme.output_style(OutputKind::AssistantWaiting),
+                theme.style(output_token_for(OutputKind::AssistantWaiting)),
             ),
         ]));
         for event in &turn.events {
@@ -685,13 +615,13 @@ fn render_assistant_turn_lines(
                 AssistantStepEvent::ToolRequest { text } => {
                     lines.push(Line::from(Span::styled(
                         format!("{THINKING_BLOCK_PADDING}{text}"),
-                        theme.output_style(OutputKind::AssistantProgressRequest),
+                        theme.style(output_token_for(OutputKind::AssistantProgressRequest)),
                     )));
                 }
                 AssistantStepEvent::ToolResult { text } => {
                     lines.push(Line::from(Span::styled(
                         format!("{THINKING_BLOCK_PADDING}{text}"),
-                        theme.output_style(OutputKind::AssistantProgressResult),
+                        theme.style(output_token_for(OutputKind::AssistantProgressResult)),
                     )));
                 }
             }
@@ -705,7 +635,7 @@ fn render_assistant_turn_lines(
             for line in split_output_lines(text) {
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
-                    theme.output_style(OutputKind::AssistantText),
+                    theme.style(output_token_for(OutputKind::AssistantText)),
                 )));
             }
         }
@@ -713,7 +643,7 @@ fn render_assistant_turn_lines(
             for line in split_output_lines(message) {
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
-                    theme.output_style(OutputKind::SystemError),
+                    theme.style(output_token_for(OutputKind::SystemError)),
                 )));
             }
         }
@@ -728,6 +658,30 @@ fn split_output_lines(text: &str) -> Vec<&str> {
     }
 
     text.lines().collect()
+}
+
+fn prompt_token_for(mode: Mode) -> ThemeToken {
+    match mode {
+        Mode::Python => ThemeToken::PythonPrompt,
+        Mode::Assistant => ThemeToken::AssistantPrompt,
+    }
+}
+
+fn output_token_for(kind: OutputKind) -> ThemeToken {
+    match kind {
+        OutputKind::UserInputPython => ThemeToken::UserInputPython,
+        OutputKind::UserInputAssistant => ThemeToken::UserInputAssistant,
+        OutputKind::PythonValue => ThemeToken::PythonValue,
+        OutputKind::PythonStdout => ThemeToken::PythonStdout,
+        OutputKind::PythonStderr => ThemeToken::PythonStderr,
+        OutputKind::PythonTraceback => ThemeToken::PythonTraceback,
+        OutputKind::AssistantText => ThemeToken::AssistantText,
+        OutputKind::AssistantWaiting => ThemeToken::AssistantWaiting,
+        OutputKind::AssistantProgressRequest => ThemeToken::AssistantProgressRequest,
+        OutputKind::AssistantProgressResult => ThemeToken::AssistantProgressResult,
+        OutputKind::SystemInfo => ThemeToken::SystemInfo,
+        OutputKind::SystemError => ThemeToken::SystemError,
+    }
 }
 
 fn format_tool_request_line(name: &str, args_json: &Value) -> String {
@@ -925,8 +879,9 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::theme::Theme;
     use super::{
-        AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode, Theme,
+        AssistantStepEvent, AssistantTurn, AssistantTurnState, Mode,
         append_newline_with_indent, format_tool_error_line, format_tool_request_line,
         format_tool_result_line, input_cursor_position, last_line_indent, mode_status_text,
         preview_text, prompt_for, render_assistant_turn_lines, resolve_color_enabled_with,

@@ -101,6 +101,29 @@ impl FromStr for ThemeToken {
     }
 }
 
+impl ThemeToken {
+    pub const fn all() -> [Self; 16] {
+        [
+            Self::PythonPrompt,
+            Self::AssistantPrompt,
+            Self::UserInputPython,
+            Self::UserInputAssistant,
+            Self::PythonValue,
+            Self::PythonStdout,
+            Self::PythonStderr,
+            Self::PythonTraceback,
+            Self::AssistantText,
+            Self::AssistantWaiting,
+            Self::AssistantProgressRequest,
+            Self::AssistantProgressResult,
+            Self::SystemInfo,
+            Self::SystemError,
+            Self::Status,
+            Self::InputBlock,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyleOverride {
     pub fg: Option<HexColor>,

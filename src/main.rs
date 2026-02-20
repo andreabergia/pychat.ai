@@ -36,6 +36,7 @@ async fn main() -> Result<()> {
         python,
         llm,
         agent_config: AgentConfig::default(),
+        theme_config: config.theme.clone(),
     };
 
     run_repl(&mut app_state).await
