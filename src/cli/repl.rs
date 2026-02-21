@@ -1260,6 +1260,22 @@ pub mod test_support {
         ui_state: UiState,
     }
 
+    #[derive(Debug, Clone)]
+    pub struct DeterministicTestEnv {
+        pub xdg_config_home: PathBuf,
+        pub xdg_state_home: PathBuf,
+        pub no_color: String,
+    }
+
+    impl DeterministicTestEnv {
+        pub fn apply_to_command(&self, command: &mut std::process::Command) {
+            command
+                .env("NO_COLOR", &self.no_color)
+                .env("XDG_CONFIG_HOME", &self.xdg_config_home)
+                .env("XDG_STATE_HOME", &self.xdg_state_home);
+        }
+    }
+
     impl UiHarness {
         pub fn new(width: u16, height: u16, app_state: AppState) -> Result<Self> {
             let backend = TestBackend::new(width, height);
@@ -1338,8 +1354,16 @@ pub mod test_support {
     }
 
     pub fn deterministic_app_state(session_id: &str) -> Result<AppState> {
-        let trace_dir = unique_trace_dir()?;
-        Ok(AppState {
+        let (state, _) = deterministic_app_state_with_env(session_id)?;
+        Ok(state)
+    }
+
+    pub fn deterministic_app_state_with_env(
+        session_id: &str,
+    ) -> Result<(AppState, DeterministicTestEnv)> {
+        let env = deterministic_test_env()?;
+        let trace_dir = env.xdg_state_home.join("pyaichat").join("traces");
+        let state = AppState {
             mode: Mode::Python,
             session_id: session_id.to_string(),
             python: PythonSession::initialize()?,
@@ -1347,7 +1371,8 @@ pub mod test_support {
             agent_config: AgentConfig::default(),
             theme_config: ThemeConfig::default(),
             trace: SessionTrace::create_in_temp_dir(session_id, &trace_dir)?,
-        })
+        };
+        Ok((state, env))
     }
 
     pub fn deterministic_app_state_with_theme(
@@ -1359,12 +1384,29 @@ pub mod test_support {
         Ok(state)
     }
 
-    fn unique_trace_dir() -> Result<PathBuf> {
+    pub fn deterministic_test_env() -> Result<DeterministicTestEnv> {
+        let root = unique_test_root_dir()?;
+        let xdg_config_home = root.join("config-home");
+        let xdg_state_home = root.join("state-home");
+        fs::create_dir_all(&xdg_config_home)
+            .with_context(|| format!("failed to create {}", xdg_config_home.display()))?;
+        fs::create_dir_all(&xdg_state_home)
+            .with_context(|| format!("failed to create {}", xdg_state_home.display()))?;
+        Ok(DeterministicTestEnv {
+            xdg_config_home,
+            xdg_state_home,
+            no_color: "1".to_string(),
+        })
+    }
+
+    fn unique_test_root_dir() -> Result<PathBuf> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let dir =
-            std::env::temp_dir().join(format!("pyaichat-ui-tests-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pyaichat-test-support-{}-{nanos}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
         Ok(dir)
     }
@@ -1868,6 +1910,22 @@ mod tests {
         let toggled = harness.buffer_snapshot();
         assert!(toggled.contains("Mode: AI Assistant"));
         assert!(harness.ui_state_view().prompt.contains("ai> "));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn test_support_env_defaults_no_color_and_isolates_xdg_dirs() {
+        use super::test_support::{deterministic_app_state_with_env, deterministic_test_env};
+
+        let env = deterministic_test_env().expect("deterministic env");
+        assert_eq!(env.no_color, "1");
+        assert!(env.xdg_config_home.exists());
+        assert!(env.xdg_state_home.exists());
+
+        let (_state, env_for_state) =
+            deterministic_app_state_with_env("phase2-env").expect("state with env");
+        let trace_root = env_for_state.xdg_state_home.join("pyaichat").join("traces");
+        assert!(trace_root.exists());
     }
 
     fn test_app_state(session_id: &str, trace_dir: &std::path::Path) -> AppState {
