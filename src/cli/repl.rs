@@ -1644,7 +1644,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "missing file argument. usage: /run <file.py>"),
+                .any(|line| line == "missing file argument. usage: /run <file>"),
             "missing file argument text should be shown"
         );
     }

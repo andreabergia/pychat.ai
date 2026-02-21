@@ -35,7 +35,7 @@ impl ParseError {
     }
 }
 
-pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help                Show this command list\n  /mode [py|ai]        Show or switch active mode\n  /clear               Clear the timeline output\n  /history [n]         Show command/input history (or last n)\n  /trace               Show path to the current trace file\n  /inspect <expr>      Inspect a Python expression as structured JSON\n  /last_error          Show the last Python exception traceback\n  /include <file.py>   Execute a Python file in the current session\n  /run <file.py>       Alias for /include\n  /show_source <name>  Show source code for a function/class/module name\n  /steps [on|off]      Show or hide assistant reasoning steps";
+pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help                Show this command list\n  /mode [py|ai]        Show or switch active mode\n  /clear               Clear the timeline output\n  /history [n]         Show command/input history (or last n)\n  /trace               Show path to the current trace file\n  /inspect <expr>      Inspect a Python expression as structured JSON\n  /last_error          Show the last Python exception traceback\n  /include <file.py>   Execute a Python file in the current session\n  /run <file>          Execute a file path exactly as provided\n  /show_source <name>  Show source code for a function/class/module name\n  /steps [on|off]      Show or hide assistant reasoning steps";
 
 pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
     if !line.starts_with('/') {
@@ -64,8 +64,8 @@ pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
         "inspect" => parse_required_text_arg(rest, "usage: /inspect <expr>")
             .map(|expr| Command::Inspect { expr }),
         "last_error" => expect_no_args(rest, Command::LastError, "usage: /last_error"),
-        "include" => parse_include(rest, "include"),
-        "run" => parse_include(rest, "run"),
+        "include" => parse_include(rest),
+        "run" => parse_run(rest),
         "show_source" => parse_required_text_arg(rest, "usage: /show_source <name>")
             .map(|name| Command::ShowSource { name }),
         "steps" => parse_steps(rest),
@@ -114,18 +114,28 @@ fn parse_history(rest: &str) -> Result<Command, ParseError> {
     Ok(Command::History(Some(value)))
 }
 
-fn parse_include(rest: &str, command_name: &str) -> Result<Command, ParseError> {
+fn parse_include(rest: &str) -> Result<Command, ParseError> {
     if rest.is_empty() {
-        return Err(ParseError::new(format!(
-            "missing file argument. usage: /{command_name} <file.py>"
-        )));
+        return Err(ParseError::new(
+            "missing file argument. usage: /include <file.py>",
+        ));
     }
 
     let path = rest.to_string();
     if !path.ends_with(".py") {
-        return Err(ParseError::new(format!("usage: /{command_name} <file.py>")));
+        return Err(ParseError::new("usage: /include <file.py>"));
     }
     Ok(Command::Include { path })
+}
+
+fn parse_run(rest: &str) -> Result<Command, ParseError> {
+    if rest.is_empty() {
+        return Err(ParseError::new("missing file argument. usage: /run <file>"));
+    }
+
+    Ok(Command::Include {
+        path: rest.to_string(),
+    })
 }
 
 fn parse_steps(rest: &str) -> Result<Command, ParseError> {
@@ -162,7 +172,7 @@ mod tests {
             "/inspect <expr>",
             "/last_error",
             "/include <file.py>",
-            "/run <file.py>",
+            "/run <file>",
             "/show_source <name>",
             "/steps [on|off]",
         ] {
@@ -232,6 +242,12 @@ mod tests {
                 path: "script.py".to_string()
             }
         );
+        assert_eq!(
+            parse_command("/run script").expect("run alias without extension"),
+            Command::Include {
+                path: "script".to_string()
+            }
+        );
     }
 
     #[test]
@@ -271,12 +287,6 @@ mod tests {
             "usage: /include <file.py>"
         );
         assert_eq!(
-            parse_command("/run not_python.txt")
-                .expect_err("invalid run path")
-                .message(),
-            "usage: /run <file.py>"
-        );
-        assert_eq!(
             parse_command("/include")
                 .expect_err("missing include argument")
                 .message(),
@@ -286,7 +296,7 @@ mod tests {
             parse_command("/run")
                 .expect_err("missing run argument")
                 .message(),
-            "missing file argument. usage: /run <file.py>"
+            "missing file argument. usage: /run <file>"
         );
         assert_eq!(
             parse_command("/steps maybe")
