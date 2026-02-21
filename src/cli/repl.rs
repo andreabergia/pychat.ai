@@ -1139,7 +1139,7 @@ fn input_cursor_position(input: &str) -> (usize, usize) {
 fn resolve_color_enabled() -> bool {
     resolve_color_enabled_with(
         std::env::var("NO_COLOR").ok(),
-        std::env::var("PYAICHAT_FORCE_COLOR").ok(),
+        std::env::var("PYCHAT_AI_FORCE_COLOR").ok(),
         io::stdout().is_terminal(),
     )
 }
@@ -1193,12 +1193,12 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
 }
 
 fn status_right_text(session_id: &str) -> String {
-    format!("PyAiChat | Session: {session_id}")
+    format!("PyChat.ai | Session: {session_id}")
 }
 
 fn session_closed_message(trace_file_path: &std::path::Path) -> String {
     format!(
-        "PyAiChat session ended.\nTrace file: {}",
+        "PyChat.ai session ended.\nTrace file: {}",
         trace_file_path.display()
     )
 }
@@ -1430,7 +1430,7 @@ pub mod test_support {
         session_id: &str,
     ) -> Result<(AppState, DeterministicTestEnv)> {
         let env = deterministic_test_env()?;
-        let trace_dir = env.xdg_state_home.join("pyaichat").join("traces");
+        let trace_dir = env.xdg_state_home.join("pychat.ai").join("traces");
         let state = AppState {
             mode: Mode::Python,
             session_id: session_id.to_string(),
@@ -1472,7 +1472,7 @@ pub mod test_support {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
         let dir = std::env::temp_dir().join(format!(
-            "pyaichat-test-support-{}-{nanos}",
+            "pychat.ai-test-support-{}-{nanos}",
             std::process::id()
         ));
         fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -1607,16 +1607,16 @@ mod tests {
 
     #[test]
     fn status_right_text_includes_session_id() {
-        assert_eq!(status_right_text("abc123"), "PyAiChat | Session: abc123");
+        assert_eq!(status_right_text("abc123"), "PyChat.ai | Session: abc123");
     }
 
     #[test]
     fn session_closed_message_includes_trace_file_path() {
         assert_eq!(
             session_closed_message(std::path::Path::new(
-                "/tmp/pyaichat/traces/session-abc123.log"
+                "/tmp/pychat.ai/traces/session-abc123.log"
             )),
-            "PyAiChat session ended.\nTrace file: /tmp/pyaichat/traces/session-abc123.log"
+            "PyChat.ai session ended.\nTrace file: /tmp/pychat.ai/traces/session-abc123.log"
         );
     }
 
@@ -1969,9 +1969,9 @@ mod tests {
         harness.render().expect("render");
 
         let initial = harness.buffer_snapshot();
-        assert!(initial.contains("Welcome to PyAIChat"));
+        assert!(initial.contains("Welcome to PyChat.ai"));
         assert!(initial.contains("Mode: Python"));
-        assert!(initial.contains("PyAiChat | Session: phase2-ui"));
+        assert!(initial.contains("PyChat.ai | Session: phase2-ui"));
 
         harness
             .send_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
@@ -1996,7 +1996,10 @@ mod tests {
 
         let (_state, env_for_state) =
             deterministic_app_state_with_env("phase2-env").expect("state with env");
-        let trace_root = env_for_state.xdg_state_home.join("pyaichat").join("traces");
+        let trace_root = env_for_state
+            .xdg_state_home
+            .join("pychat.ai")
+            .join("traces");
         assert!(trace_root.exists());
     }
 

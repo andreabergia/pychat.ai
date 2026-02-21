@@ -1,8 +1,8 @@
-# PyAIChat — Implementation Plan
+# PyChat.ai — Implementation Plan
 
 ## Overview
 
-PyAIChat is implemented as a Rust host application that embeds a Python interpreter. The Rust application manages the REPL, LLM integration, and capability system, while the embedded Python maintains session state and executes user code.
+PyChat.ai is implemented as a Rust host application that embeds a Python interpreter. The Rust application manages the REPL, LLM integration, and capability system, while the embedded Python maintains session state and executes user code.
 
 ## Decision Locks (Current)
 
@@ -243,7 +243,7 @@ _Deferred from Phase 1_: public exec/eval runtime API and exception capture/quer
 ## Directory Structure (Proposed)
 
 ```
-pyaichat/
+pychat.ai/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs              # Entry point, REPL loop

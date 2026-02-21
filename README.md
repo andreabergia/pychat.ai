@@ -1,4 +1,4 @@
-# PyAIChat
+# PyChat.ai
 
 Minimal Python REPL with a conversational assistant that can inspect live runtime state.
 
@@ -6,10 +6,10 @@ Minimal Python REPL with a conversational assistant that can inspect live runtim
 
 Use `--config /path/to/config.toml` to load a specific config file.
 
-PyAIChat reads optional config from:
+PyChat.ai reads optional config from:
 
-1. `$XDG_CONFIG_HOME/pyaichat/config.toml`
-2. `~/.config/pyaichat/config.toml` when `XDG_CONFIG_HOME` is not set
+1. `$XDG_CONFIG_HOME/pychat.ai/config.toml`
+2. `~/.config/pychat.ai/config.toml` when `XDG_CONFIG_HOME` is not set
 
 The default probe path is used only when `--config` is not provided.
 
@@ -74,6 +74,6 @@ For `gemini_model` and `gemini_base_url`:
 
 Color enablement precedence is unchanged:
 
-- `PYAICHAT_FORCE_COLOR` truthy value forces color on
+- `PYCHAT_AI_FORCE_COLOR` truthy value forces color on
 - else `NO_COLOR` disables color
 - else TTY decides

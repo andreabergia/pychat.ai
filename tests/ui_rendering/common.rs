@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-use pyaichat::cli::test_support::{UiHarness, deterministic_app_state};
+use pychat_ai::cli::test_support::{UiHarness, deterministic_app_state};
 use ratatui::layout::Rect;
 
 pub fn new_harness(session_id: &str, width: u16, height: u16) -> Result<UiHarness> {

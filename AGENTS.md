@@ -1,7 +1,7 @@
-# PyAIChat Memory File
+# PyChat.ai Memory File
 
 ## Project Overview
-PyAIChat is a minimal command-line Python environment combining normal code execution with a conversational assistant that inspects live runtime state. Users can write/run Python code and switch to assistant mode to ask questions about variables, objects, functions, or errors.
+PyChat.ai is a minimal command-line Python environment combining normal code execution with a conversational assistant that inspects live runtime state. Users can write/run Python code and switch to assistant mode to ask questions about variables, objects, functions, or errors.
 
 **One-liner**: A minimal Python REPL with a conversational assistant that inspects and explains live runtime state for interactive exploration.
 

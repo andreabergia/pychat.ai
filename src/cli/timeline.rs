@@ -104,7 +104,7 @@ impl Timeline {
     ) -> Vec<Line<'static>> {
         if self.entries.is_empty() {
             return vec![Line::from(Span::styled(
-                "Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
+                "Welcome to PyChat.ai. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
                 theme.style(output_token_for(OutputKind::SystemInfo)),
             ))];
         }
@@ -353,7 +353,7 @@ mod tests {
     fn empty_timeline_renders_welcome_message() {
         let lines = text_lines(Timeline::new().render_lines(&Theme::new(false), true));
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("Welcome to PyAIChat. TAB toggles Python/AI mode."));
+        assert!(lines[0].contains("Welcome to PyChat.ai. TAB toggles Python/AI mode."));
     }
 
     #[test]

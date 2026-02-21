@@ -103,14 +103,15 @@ fn spawn_app() -> (Session, TempDir, TempDir) {
         .env("XDG_STATE_HOME", state_home.path())
         .env_remove("GEMINI_API_KEY");
 
-    let mut session = Session::spawn(command).expect("spawn pyaichat in PTY");
+    let mut session = Session::spawn(command).expect("spawn pychat.ai in PTY");
     session.set_expect_timeout(Some(EXPECT_TIMEOUT));
 
     (session, config_home, state_home)
 }
 
 fn binary_path() -> String {
-    std::env::var("CARGO_BIN_EXE_pyaichat").unwrap_or_else(|_| "target/debug/pyaichat".to_string())
+    std::env::var("CARGO_BIN_EXE_pychat_ai")
+        .unwrap_or_else(|_| "target/debug/pychat_ai".to_string())
 }
 
 fn send_tab(session: &mut Session) {
@@ -148,7 +149,7 @@ fn expect_text(session: &mut Session, text: &str) {
 }
 
 fn read_trace_file(state_home: &TempDir) -> (PathBuf, String) {
-    let trace_dir = state_home.path().join("pyaichat").join("traces");
+    let trace_dir = state_home.path().join("pychat.ai").join("traces");
     let mut entries = fs::read_dir(&trace_dir)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", trace_dir.display()))
         .collect::<Result<Vec<_>, _>>()

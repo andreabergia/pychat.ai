@@ -9,7 +9,7 @@ use std::str::FromStr;
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3-flash-preview";
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
-const CONFIG_DIR_NAME: &str = "pyaichat";
+const CONFIG_DIR_NAME: &str = "pychat.ai";
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,7 +457,7 @@ mod tests {
     #[serial]
     fn load_env_api_key_overrides_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),
@@ -510,7 +510,7 @@ gemini_base_url = "https://example.com"
     #[serial]
     fn load_uses_xdg_config_path_when_set() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),
@@ -531,7 +531,7 @@ gemini_base_url = "https://example.com"
     #[serial]
     fn load_with_path_uses_explicit_config_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),
@@ -592,7 +592,7 @@ gemini_base_url = "https://example.com"
     #[serial]
     fn load_fails_on_unknown_root_key() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(config_dir.join("config.toml"), "unknown_key = 1").expect("write config");
 
@@ -612,7 +612,7 @@ gemini_base_url = "https://example.com"
     #[serial]
     fn load_fails_on_unknown_style_token() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),
@@ -641,7 +641,7 @@ fg = "#ffffff"
     #[serial]
     fn load_fails_on_invalid_hex_color() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),
@@ -670,7 +670,7 @@ fg = "red"
     #[serial]
     fn load_fails_on_unknown_modifier() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),
@@ -699,7 +699,7 @@ modifiers = ["sparkly"]
     #[serial]
     fn load_parses_theme_config_with_strong_types() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("pyaichat");
+        let config_dir = tmp.path().join("pychat.ai");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(
             config_dir.join("config.toml"),

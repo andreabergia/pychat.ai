@@ -11,12 +11,12 @@ async fn initial_render_shows_welcome_and_status_with_session() -> Result<()> {
     harness.render()?;
 
     let timeline = timeline_snapshot(&harness)?;
-    assert!(timeline.contains("Welcome to PyAIChat"));
+    assert!(timeline.contains("Welcome to PyChat.ai"));
 
     let status = status_snapshot(&harness)?;
     assert!(status.contains("Mode: Python"));
     assert!(status.contains("Show agent thinking: On (Ctrl-T)"));
-    assert!(status.contains("PyAiChat | Session: phase3-welcome"));
+    assert!(status.contains("PyChat.ai | Session: phase3-welcome"));
 
     Ok(())
 }

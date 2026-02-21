@@ -19,15 +19,16 @@ fn binary_help_smoke_test() {
         "help output should include explicit config flag"
     );
     assert!(
-        stdout.contains("$XDG_CONFIG_HOME/pyaichat/config.toml"),
+        stdout.contains("$XDG_CONFIG_HOME/pychat.ai/config.toml"),
         "help output should include XDG default config path"
     );
     assert!(
-        stdout.contains("~/.config/pyaichat/config.toml"),
+        stdout.contains("~/.config/pychat.ai/config.toml"),
         "help output should include home default config path"
     );
 }
 
 fn binary_path() -> String {
-    std::env::var("CARGO_BIN_EXE_pyaichat").unwrap_or_else(|_| "target/debug/pyaichat".to_string())
+    std::env::var("CARGO_BIN_EXE_pychat_ai")
+        .unwrap_or_else(|_| "target/debug/pychat_ai".to_string())
 }

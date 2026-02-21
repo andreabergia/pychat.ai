@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
-const TRACE_DIR_NAME: &str = "pyaichat/traces";
+const TRACE_DIR_NAME: &str = "pychat.ai/traces";
 
 #[derive(Clone)]
 pub struct SessionTrace {
@@ -133,7 +133,7 @@ impl SessionTrace {
 
     fn report_write_failure(&self, message: &str) {
         if !self.inner.write_failed.swap(true, Ordering::Relaxed) {
-            eprintln!("PyAiChat trace warning: {message}");
+            eprintln!("PyChat.ai trace warning: {message}");
         }
     }
 }
@@ -200,13 +200,13 @@ mod tests {
     fn resolve_trace_dir_uses_xdg_state_when_set() {
         let dir = resolve_trace_dir(Some("/tmp/state"), Some(Path::new("/home/fallback")))
             .expect("trace path");
-        assert_eq!(dir, Path::new("/tmp/state/pyaichat/traces"));
+        assert_eq!(dir, Path::new("/tmp/state/pychat.ai/traces"));
     }
 
     #[test]
     fn resolve_trace_dir_uses_home_fallback() {
         let dir = resolve_trace_dir(None, Some(Path::new("/home/alice"))).expect("trace path");
-        assert_eq!(dir, Path::new("/home/alice/.local/state/pyaichat/traces"));
+        assert_eq!(dir, Path::new("/home/alice/.local/state/pychat.ai/traces"));
     }
 
     #[test]

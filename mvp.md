@@ -1,8 +1,8 @@
-# PyAIChat — Unified Vision Document
+# PyChat.ai — Unified Vision Document
 
 ## Summary
 
-PyAIChat is a minimal command-line Python environment that combines normal code execution with a conversational assistant capable of inspecting the current runtime state. Users can write and run Python code normally and switch into assistant mode to ask questions about variables, objects, functions, or errors.
+PyChat.ai is a minimal command-line Python environment that combines normal code execution with a conversational assistant capable of inspecting the current runtime state. Users can write and run Python code normally and switch into assistant mode to ask questions about variables, objects, functions, or errors.
 
 The MVP focuses on **exploratory usage**: helping users understand their Python session interactively with minimal friction.
 
@@ -14,7 +14,7 @@ The goal is simple:
 
 ## One-Line Description
 
-PyAIChat: A minimal Python REPL with a conversational assistant that inspects and explains live runtime state for interactive exploration.
+PyChat.ai: A minimal Python REPL with a conversational assistant that inspects and explains live runtime state for interactive exploration.
 
 ---
 
@@ -30,7 +30,7 @@ Working in a REPL often involves repeatedly checking:
 
 This typically requires printing values, exploring attributes manually, or consulting documentation.
 
-PyAIChat reduces this friction by allowing users to ask questions about the current state in plain language and receive grounded explanations.
+PyChat.ai reduces this friction by allowing users to ask questions about the current state in plain language and receive grounded explanations.
 
 ---
 
