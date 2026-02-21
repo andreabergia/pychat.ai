@@ -80,8 +80,7 @@ pub fn region_text(harness: &UiHarness, area: Rect) -> String {
     let end_row = start_row.saturating_add(usize::from(area.height));
 
     let mut rendered = Vec::new();
-    for row in start_row..end_row.min(lines.len()) {
-        let line = &lines[row];
+    for line in lines.iter().take(end_row.min(lines.len())).skip(start_row) {
         let clipped = line
             .chars()
             .skip(usize::from(area.x))
