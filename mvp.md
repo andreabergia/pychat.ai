@@ -233,3 +233,6 @@ No need to switch tools or add diagnostic code.
 - Better support for debugging workflows
 - Session history awareness
 - Integration with external Python processes
+- Advanced REPL features (syntax highlighting, rich output)
+- Multiple LLM provider support
+
