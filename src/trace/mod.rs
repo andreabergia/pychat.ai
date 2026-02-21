@@ -55,7 +55,7 @@ impl SessionTrace {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_in_temp_dir(session_id: &str, trace_dir: &Path) -> Result<Self> {
         Self::create_in_dir(session_id, trace_dir)
     }

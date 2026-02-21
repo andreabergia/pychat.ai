@@ -204,7 +204,7 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
 }
 
 async fn run_tui_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<impl ratatui::backend::Backend>,
     state: &mut AppState,
     ui_state: &mut UiState,
 ) -> Result<()> {
@@ -265,7 +265,7 @@ fn handle_mouse_event(
 }
 
 async fn handle_key_event(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<impl ratatui::backend::Backend>,
     state: &mut AppState,
     ui_state: &mut UiState,
     key: KeyEvent,
@@ -315,7 +315,7 @@ async fn handle_key_event(
 }
 
 async fn handle_enter(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<impl ratatui::backend::Backend>,
     state: &mut AppState,
     ui_state: &mut UiState,
 ) -> Result<()> {
@@ -360,7 +360,7 @@ fn insert_python_newline(ui_state: &mut UiState) {
 }
 
 async fn submit_current_line(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<impl ratatui::backend::Backend>,
     state: &mut AppState,
     ui_state: &mut UiState,
 ) -> Result<()> {
@@ -1225,6 +1225,174 @@ fn output_trace_kind(kind: OutputKind) -> &'static str {
     }
 }
 
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::{
+        AppState, Mode, UiState, draw_ui, handle_key_event, handle_mouse_event, is_command_line,
+        prompt_for, timeline_max_scroll, ui_layout,
+    };
+    use crate::agent::AgentConfig;
+    use crate::config::ThemeConfig;
+    use crate::python::PythonSession;
+    use crate::trace::SessionTrace;
+    use anyhow::{Context, Result};
+    use crossterm::event::{KeyEvent, MouseEvent};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug)]
+    pub struct UiStateView {
+        pub mode: Mode,
+        pub prompt: &'static str,
+        pub input: String,
+        pub timeline_scroll: usize,
+        pub show_assistant_steps: bool,
+        pub session_id: String,
+    }
+
+    pub struct UiHarness {
+        terminal: Terminal<TestBackend>,
+        app_state: AppState,
+        ui_state: UiState,
+    }
+
+    impl UiHarness {
+        pub fn new(width: u16, height: u16, app_state: AppState) -> Result<Self> {
+            let backend = TestBackend::new(width, height);
+            let terminal = Terminal::new(backend)?;
+            let ui_state = UiState::new(
+                app_state.mode,
+                app_state.session_id.clone(),
+                false,
+                &app_state.theme_config,
+            );
+
+            Ok(Self {
+                terminal,
+                app_state,
+                ui_state,
+            })
+        }
+
+        pub fn app_state(&self) -> &AppState {
+            &self.app_state
+        }
+
+        pub fn app_state_mut(&mut self) -> &mut AppState {
+            &mut self.app_state
+        }
+
+        pub fn ui_state_view(&self) -> UiStateView {
+            let input = self.ui_state.current_input().to_string();
+            let command_input = is_command_line(&input);
+            UiStateView {
+                mode: self.ui_state.mode,
+                prompt: prompt_for(self.ui_state.mode, command_input),
+                input,
+                timeline_scroll: self.ui_state.timeline_scroll,
+                show_assistant_steps: self.ui_state.show_assistant_steps,
+                session_id: self.ui_state.session_id.clone(),
+            }
+        }
+
+        pub fn render(&mut self) -> Result<()> {
+            self.terminal.draw(|frame| draw_ui(frame, &self.ui_state))?;
+            Ok(())
+        }
+
+        pub async fn send_key(&mut self, key: KeyEvent) -> Result<()> {
+            handle_key_event(
+                &mut self.terminal,
+                &mut self.app_state,
+                &mut self.ui_state,
+                key,
+            )
+            .await
+        }
+
+        pub fn send_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+            let size = self.terminal.size()?;
+            let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+            let layout = ui_layout(area, self.ui_state.current_input());
+            let line_count = self
+                .ui_state
+                .timeline
+                .render_lines(&self.ui_state.theme, self.ui_state.show_assistant_steps)
+                .len();
+            let max_scroll = timeline_max_scroll(line_count, usize::from(layout.timeline.height));
+            handle_mouse_event(&mut self.ui_state, mouse, layout.timeline, max_scroll);
+            Ok(())
+        }
+
+        pub fn buffer_text(&self) -> String {
+            buffer_to_string(self.terminal.backend().buffer())
+        }
+
+        pub fn buffer_snapshot(&self) -> String {
+            normalize_snapshot(&self.buffer_text())
+        }
+    }
+
+    pub fn deterministic_app_state(session_id: &str) -> Result<AppState> {
+        let trace_dir = unique_trace_dir()?;
+        Ok(AppState {
+            mode: Mode::Python,
+            session_id: session_id.to_string(),
+            python: PythonSession::initialize()?,
+            llm: None,
+            agent_config: AgentConfig::default(),
+            theme_config: ThemeConfig::default(),
+            trace: SessionTrace::create_in_temp_dir(session_id, &trace_dir)?,
+        })
+    }
+
+    pub fn deterministic_app_state_with_theme(
+        session_id: &str,
+        theme_config: ThemeConfig,
+    ) -> Result<AppState> {
+        let mut state = deterministic_app_state(session_id)?;
+        state.theme_config = theme_config;
+        Ok(state)
+    }
+
+    fn unique_trace_dir() -> Result<PathBuf> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let dir =
+            std::env::temp_dir().join(format!("pyaichat-ui-tests-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let mut lines = Vec::with_capacity(usize::from(buffer.area.height));
+        for y in 0..buffer.area.height {
+            let mut line = String::new();
+            for x in 0..buffer.area.width {
+                let cell = buffer
+                    .cell((x, y))
+                    .expect("buffer index should be in-bounds");
+                line.push_str(cell.symbol());
+            }
+            lines.push(line);
+        }
+        lines.join("\n")
+    }
+
+    fn normalize_snapshot(text: &str) -> String {
+        text.replace("\r\n", "\n")
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1674,6 +1842,32 @@ mod tests {
             !marker.exists(),
             "unsafe expression should not execute side effects"
         );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn test_support_harness_renders_and_toggles_mode() {
+        use super::test_support::{UiHarness, deterministic_app_state};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let state = deterministic_app_state("phase2-ui").expect("deterministic app state");
+        let mut harness = UiHarness::new(80, 20, state).expect("harness");
+        harness.render().expect("render");
+
+        let initial = harness.buffer_snapshot();
+        assert!(initial.contains("Welcome to PyAIChat"));
+        assert!(initial.contains("Mode: Python"));
+        assert!(initial.contains("PyAiChat | Session: phase2-ui"));
+
+        harness
+            .send_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .expect("tab");
+        harness.render().expect("render after tab");
+
+        let toggled = harness.buffer_snapshot();
+        assert!(toggled.contains("Mode: AI Assistant"));
+        assert!(harness.ui_state_view().prompt.contains("ai> "));
     }
 
     fn test_app_state(session_id: &str, trace_dir: &std::path::Path) -> AppState {
