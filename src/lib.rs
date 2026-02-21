@@ -53,3 +53,30 @@ fn generate_session_id() -> String {
         .map_or(0, |duration| duration.as_millis());
     format!("{millis:x}-{:x}", std::process::id())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::generate_session_id;
+
+    #[test]
+    fn generated_session_id_has_expected_shape() {
+        let session_id = generate_session_id();
+        let mut parts = session_id.split('-');
+        let ts = parts.next().expect("timestamp segment");
+        let pid = parts.next().expect("pid segment");
+        assert!(
+            parts.next().is_none(),
+            "session id should contain one delimiter"
+        );
+        assert!(!ts.is_empty(), "timestamp segment should not be empty");
+        assert!(!pid.is_empty(), "pid segment should not be empty");
+        assert!(
+            ts.chars().all(|ch| ch.is_ascii_hexdigit()),
+            "timestamp segment should be hex"
+        );
+        assert!(
+            pid.chars().all(|ch| ch.is_ascii_hexdigit()),
+            "pid segment should be hex"
+        );
+    }
+}
