@@ -1,0 +1,5 @@
+---
+source: tests/ui_rendering/timeline_input_render_test.rs
+expression: status_snapshot(&harness)?
+---
+Mode: AI Assistant | Show agent thinking: On (Ctrl-T)            PyAiChat | Session: phase3-snapshot

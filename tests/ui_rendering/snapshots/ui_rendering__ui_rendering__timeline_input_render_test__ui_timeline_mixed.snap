@@ -1,0 +1,14 @@
+---
+source: tests/ui_rendering/timeline_input_render_test.rs
+expression: timeline_snapshot(&harness)?
+---
+ py> x = 41
+ py> x + 1
+ 42
+ ai> summarize x
+
+   Thinking...
+   -> Inspecting: x
+   <- Inspection complete: int
+
+ x is 42

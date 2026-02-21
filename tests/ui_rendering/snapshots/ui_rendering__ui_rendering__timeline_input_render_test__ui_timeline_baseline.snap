@@ -1,0 +1,5 @@
+---
+source: tests/ui_rendering/timeline_input_render_test.rs
+expression: timeline_snapshot(&harness)?
+---
+ Welcome to PyAIChat. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.
