@@ -1232,14 +1232,16 @@ pub mod test_support {
         prompt_for, timeline_max_scroll, ui_layout,
     };
     use crate::agent::AgentConfig;
+    use crate::cli::timeline::{AssistantStepEvent, AssistantTurnState};
     use crate::config::ThemeConfig;
     use crate::python::PythonSession;
     use crate::trace::SessionTrace;
-    use anyhow::{Context, Result};
+    use anyhow::{Context, Result, bail};
     use crossterm::event::{KeyEvent, MouseEvent};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1265,6 +1267,13 @@ pub mod test_support {
         pub xdg_config_home: PathBuf,
         pub xdg_state_home: PathBuf,
         pub no_color: String,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct UiRegions {
+        pub timeline: Rect,
+        pub input: Rect,
+        pub status: Rect,
     }
 
     impl DeterministicTestEnv {
@@ -1331,16 +1340,14 @@ pub mod test_support {
         }
 
         pub fn send_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
-            let size = self.terminal.size()?;
-            let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-            let layout = ui_layout(area, self.ui_state.current_input());
+            let regions = self.regions()?;
             let line_count = self
                 .ui_state
                 .timeline
                 .render_lines(&self.ui_state.theme, self.ui_state.show_assistant_steps)
                 .len();
-            let max_scroll = timeline_max_scroll(line_count, usize::from(layout.timeline.height));
-            handle_mouse_event(&mut self.ui_state, mouse, layout.timeline, max_scroll);
+            let max_scroll = timeline_max_scroll(line_count, usize::from(regions.timeline.height));
+            handle_mouse_event(&mut self.ui_state, mouse, regions.timeline, max_scroll);
             Ok(())
         }
 
@@ -1348,8 +1355,69 @@ pub mod test_support {
             buffer_to_string(self.terminal.backend().buffer())
         }
 
+        pub fn buffer_lines(&self) -> Vec<String> {
+            buffer_to_lines(self.terminal.backend().buffer())
+        }
+
+        pub fn line(&self, row: u16) -> Option<String> {
+            self.buffer_lines().get(usize::from(row)).cloned()
+        }
+
+        pub fn terminal_size(&self) -> (u16, u16) {
+            let area = self.terminal.backend().buffer().area;
+            (area.width, area.height)
+        }
+
+        pub fn regions(&self) -> Result<UiRegions> {
+            let size = self.terminal.size()?;
+            let area = Rect::new(0, 0, size.width, size.height);
+            let layout = ui_layout(area, self.ui_state.current_input());
+            Ok(UiRegions {
+                timeline: layout.timeline,
+                input: layout.input,
+                status: layout.status,
+            })
+        }
+
         pub fn buffer_snapshot(&self) -> String {
             normalize_snapshot(&self.buffer_text())
+        }
+
+        pub fn seed_assistant_turn_completed(
+            &mut self,
+            prompt: &str,
+            tool_events: &[(&str, &str)],
+            response: &str,
+        ) -> Result<()> {
+            let index = self.ui_state.push_assistant_turn(prompt.to_string());
+            let Some(turn) = self.ui_state.assistant_turn_mut(index) else {
+                bail!("failed to find seeded assistant turn at index {index}");
+            };
+
+            for (kind, text) in tool_events {
+                if kind.eq_ignore_ascii_case("request") {
+                    turn.events.push(AssistantStepEvent::ToolRequest {
+                        text: (*text).to_string(),
+                    });
+                } else if kind.eq_ignore_ascii_case("result") {
+                    turn.events.push(AssistantStepEvent::ToolResult {
+                        text: (*text).to_string(),
+                    });
+                } else {
+                    bail!("unsupported assistant event kind: {kind}");
+                }
+            }
+            turn.state = AssistantTurnState::CompletedText(response.to_string());
+            Ok(())
+        }
+
+        pub fn seed_assistant_turn_error(&mut self, prompt: &str, error: &str) -> Result<()> {
+            let index = self.ui_state.push_assistant_turn(prompt.to_string());
+            let Some(turn) = self.ui_state.assistant_turn_mut(index) else {
+                bail!("failed to find seeded assistant turn at index {index}");
+            };
+            turn.state = AssistantTurnState::CompletedError(error.to_string());
+            Ok(())
         }
     }
 
@@ -1412,6 +1480,10 @@ pub mod test_support {
     }
 
     fn buffer_to_string(buffer: &Buffer) -> String {
+        buffer_to_lines(buffer).join("\n")
+    }
+
+    fn buffer_to_lines(buffer: &Buffer) -> Vec<String> {
         let mut lines = Vec::with_capacity(usize::from(buffer.area.height));
         for y in 0..buffer.area.height {
             let mut line = String::new();
@@ -1423,7 +1495,7 @@ pub mod test_support {
             }
             lines.push(line);
         }
-        lines.join("\n")
+        lines
     }
 
     fn normalize_snapshot(text: &str) -> String {
