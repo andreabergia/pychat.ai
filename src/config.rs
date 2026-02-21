@@ -14,9 +14,12 @@ const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfig {
+    pub config_path: PathBuf,
+    pub config_is_explicit: bool,
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
     pub gemini_base_url: String,
+    pub startup_file: Option<PathBuf>,
     pub theme: ThemeConfig,
 }
 
@@ -199,6 +202,7 @@ struct RawFileConfig {
     gemini_api_key: Option<String>,
     gemini_model: Option<String>,
     gemini_base_url: Option<String>,
+    startup_file: Option<String>,
     theme: Option<RawThemeConfig>,
 }
 
@@ -239,6 +243,13 @@ impl AppConfig {
             .as_ref()
             .and_then(|cfg| cfg.gemini_base_url.as_ref())
             .and_then(|value| non_empty(value).map(ToOwned::to_owned));
+        let startup_file = resolve_startup_file(
+            file_config
+                .as_ref()
+                .and_then(|cfg| cfg.startup_file.as_deref())
+                .and_then(non_empty),
+            &config_path,
+        )?;
 
         let theme = validate_theme(
             file_config.as_ref().and_then(|cfg| cfg.theme.as_ref()),
@@ -246,12 +257,35 @@ impl AppConfig {
         )?;
 
         Ok(Self {
+            config_path: config_path.clone(),
+            config_is_explicit: require_config_file,
             gemini_api_key: env_non_empty("GEMINI_API_KEY").or(file_api_key),
             gemini_model: file_model.unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string()),
             gemini_base_url: file_base_url.unwrap_or_else(|| DEFAULT_GEMINI_BASE_URL.to_string()),
+            startup_file,
             theme,
         })
     }
+}
+
+fn resolve_startup_file(startup_file: Option<&str>, config_path: &Path) -> Result<Option<PathBuf>> {
+    let Some(startup_file) = startup_file else {
+        return Ok(None);
+    };
+
+    let path = PathBuf::from(startup_file);
+    if path.is_absolute() {
+        return Ok(Some(path));
+    }
+
+    let config_dir = config_path.parent().ok_or_else(|| {
+        anyhow!(
+            "Failed to resolve startup_file relative path for config {}: missing parent directory",
+            config_path.display()
+        )
+    })?;
+
+    Ok(Some(config_dir.join(path)))
 }
 
 fn resolve_config_path(config_path_override: Option<&Path>) -> Result<(PathBuf, bool)> {
@@ -420,7 +454,7 @@ mod tests {
     use serial_test::serial;
     use std::env;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     fn reset_vars() {
         unsafe {
@@ -524,6 +558,8 @@ gemini_base_url = "https://example.com"
         }
 
         let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
+        assert_eq!(cfg.config_path, config_dir.join("config.toml"));
+        assert!(!cfg.config_is_explicit);
         assert_eq!(cfg.gemini_model, "from_file");
     }
 
@@ -550,7 +586,72 @@ gemini_base_url = "https://example.com"
         let cfg = with_cwd(tmp.path(), || {
             AppConfig::load_with_path(Some(explicit_config.as_path())).expect("load config")
         });
+        assert_eq!(cfg.config_path, explicit_config);
+        assert!(cfg.config_is_explicit);
         assert_eq!(cfg.gemini_model, "explicit_model");
+    }
+
+    #[test]
+    #[serial]
+    fn load_resolves_relative_startup_file_from_config_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("pychat.ai");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"startup_file = "scripts/bootstrap.py""#,
+        )
+        .expect("write config");
+
+        reset_vars();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+
+        let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
+        assert_eq!(
+            cfg.startup_file,
+            Some(config_dir.join(PathBuf::from("scripts/bootstrap.py")))
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn load_keeps_absolute_startup_file_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("pychat.ai");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        let startup_path = tmp.path().join("bootstrap.py");
+        fs::write(
+            config_dir.join("config.toml"),
+            format!(r#"startup_file = "{}""#, startup_path.display()),
+        )
+        .expect("write config");
+
+        reset_vars();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+
+        let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
+        assert_eq!(cfg.startup_file, Some(startup_path));
+    }
+
+    #[test]
+    #[serial]
+    fn load_treats_empty_startup_file_as_unset() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("pychat.ai");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(config_dir.join("config.toml"), r#"startup_file = "   ""#).expect("write config");
+
+        reset_vars();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+
+        let cfg = with_cwd(tmp.path(), || AppConfig::load().expect("load config"));
+        assert_eq!(cfg.startup_file, None);
     }
 
     #[test]

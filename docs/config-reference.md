@@ -17,6 +17,7 @@ If `--config` is provided, that file is required and startup fails if it is miss
 - `gemini_api_key`: optional string
 - `gemini_model`: optional string
 - `gemini_base_url`: optional string
+- `startup_file`: optional string path to a Python script
 - `theme`: optional table
 
 Unknown keys fail startup.
@@ -33,6 +34,15 @@ Current defaults:
 - `gemini_base_url = "https://generativelanguage.googleapis.com"`
 
 `.env` loading is supported. In practice, only `GEMINI_API_KEY` is consumed from environment.
+
+## Startup Script
+
+- `startup_file` is optional. If set, PyChat.ai executes that file before the REPL starts.
+- If `startup_file` is a relative path, it is resolved relative to the config file directory.
+- If `startup_file` is present but missing/unreadable/errors at runtime, startup fails.
+- If `startup_file` is not set:
+  - with default config discovery, PyChat.ai auto-runs `<config-dir>/startup.py` when it exists
+  - with `--config <path>`, implicit `startup.py` auto-discovery is disabled
 
 ## Theme
 

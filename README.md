@@ -51,6 +51,11 @@ Optional config path resolution:
 2. `$XDG_CONFIG_HOME/pychat.ai/config.toml`
 3. `~/.config/pychat.ai/config.toml`
 
+Startup script behavior:
+
+- Without `--config`, PyChat.ai also auto-runs `<config-dir>/startup.py` when present.
+- If `startup_file` is set in config, that script is executed before REPL startup.
+
 ## Docs
 
 - User guide: `docs/user-guide.md`

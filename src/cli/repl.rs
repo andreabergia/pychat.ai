@@ -52,6 +52,7 @@ pub struct AppState {
     pub llm: Option<GeminiProvider>,
     pub agent_config: AgentConfig,
     pub theme_config: ThemeConfig,
+    pub startup_message: Option<String>,
     pub trace: SessionTrace,
 }
 
@@ -182,6 +183,7 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
         color_enabled,
         &state.theme_config,
     );
+    initialize_timeline(state, &mut ui_state);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -201,6 +203,12 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
     println!("{}", session_closed_message(state.trace.file_path()));
 
     run_result
+}
+
+fn initialize_timeline(state: &AppState, ui_state: &mut UiState) {
+    if let Some(message) = state.startup_message.as_deref() {
+        push_output(ui_state, &state.trace, OutputKind::SystemInfo, message);
+    }
 }
 
 async fn run_tui_loop(
@@ -1438,6 +1446,7 @@ pub mod test_support {
             llm: None,
             agent_config: AgentConfig::default(),
             theme_config: ThemeConfig::default(),
+            startup_message: None,
             trace: SessionTrace::create_in_temp_dir(session_id, &trace_dir)?,
         };
         Ok((state, env))
@@ -1958,6 +1967,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn initialize_timeline_includes_startup_message_when_present() {
+        let dir = tempdir().expect("tempdir");
+        let state = AppState {
+            startup_message: Some("Startup file /tmp/startup.py was executed".to_string()),
+            ..test_app_state("startup-message", dir.path())
+        };
+        let mut ui_state = test_ui_state();
+
+        super::initialize_timeline(&state, &mut ui_state);
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Startup file /tmp/startup.py was executed"),
+            "startup message should be visible in timeline"
+        );
+    }
+
     #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn test_support_harness_renders_and_toggles_mode() {
@@ -2011,6 +2040,7 @@ mod tests {
             llm: None,
             agent_config: AgentConfig::default(),
             theme_config: ThemeConfig::default(),
+            startup_message: None,
             trace: SessionTrace::create_in_temp_dir(session_id, trace_dir).expect("trace"),
         }
     }

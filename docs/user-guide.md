@@ -60,6 +60,7 @@ Example:
 
 ```toml
 gemini_model = "gemini-3-flash-preview"
+startup_file = "startup.py"
 
 [theme]
 name = "light"
@@ -70,6 +71,13 @@ modifiers = ["bold"]
 ```
 
 Full reference: `docs/config-reference.md`
+
+Startup behavior:
+
+- `startup_file` executes before the REPL starts.
+- Relative `startup_file` paths are resolved relative to the config file directory.
+- Without `--config`, `startup.py` in the config directory is auto-executed if it exists.
+- With `--config`, implicit `startup.py` discovery is disabled.
 
 ## Traces
 
