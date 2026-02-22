@@ -23,6 +23,21 @@ if [[ -z "${python_version}" ]]; then
   exit 1
 fi
 
+matches_pinned_version() {
+  local candidate="$1"
+  local candidate_version
+
+  if [[ ! -x "${candidate}" ]]; then
+    return 1
+  fi
+
+  if ! candidate_version="$("${candidate}" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null)"; then
+    return 1
+  fi
+
+  [[ "${candidate_version}" == "${python_version}" ]]
+}
+
 mkdir -p "${repo_root}/.local"
 
 echo "Installing Python ${python_version} into ${install_dir}"
@@ -30,7 +45,7 @@ uv python install --install-dir "${install_dir}" "${python_version}"
 
 python_bin=""
 for candidate in "${install_dir}/bin/python3" "${install_dir}/bin/python"; do
-  if [[ -x "${candidate}" ]]; then
+  if matches_pinned_version "${candidate}"; then
     python_bin="${candidate}"
     break
   fi
@@ -38,7 +53,7 @@ done
 
 if [[ -z "${python_bin}" ]]; then
   while IFS= read -r candidate; do
-    if [[ -x "${candidate}" ]]; then
+    if matches_pinned_version "${candidate}"; then
       python_bin="${candidate}"
       break
     fi
@@ -46,7 +61,7 @@ if [[ -z "${python_bin}" ]]; then
 fi
 
 if [[ -z "${python_bin}" ]]; then
-  echo "error: could not find installed Python executable under ${install_dir}" >&2
+  echo "error: could not find Python ${python_version} executable under ${install_dir}" >&2
   exit 1
 fi
 
