@@ -30,3 +30,6 @@ test.py
 # Local config
 .env
 .cargo/config.toml
+
+# Project-local Python runtime
+.local/
