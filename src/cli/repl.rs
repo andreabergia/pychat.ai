@@ -721,27 +721,31 @@ fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &
         }
     };
 
-    match state.python.run_exec_input(&source) {
+    render_include_command_result(
+        ui_state,
+        &state.trace,
+        path_ref,
+        state.python.run_exec_input(&source),
+    );
+}
+
+fn render_include_command_result(
+    ui_state: &mut UiState,
+    trace: &SessionTrace,
+    path_ref: &Path,
+    result: Result<UserRunResult>,
+) {
+    match result {
         Ok(UserRunResult::Executed(result)) => {
             if !result.stdout.is_empty() {
-                push_output(
-                    ui_state,
-                    &state.trace,
-                    OutputKind::PythonStdout,
-                    &result.stdout,
-                );
+                push_output(ui_state, trace, OutputKind::PythonStdout, &result.stdout);
             }
             if !result.stderr.is_empty() {
-                push_output(
-                    ui_state,
-                    &state.trace,
-                    OutputKind::PythonStderr,
-                    &result.stderr,
-                );
+                push_output(ui_state, trace, OutputKind::PythonStderr, &result.stderr);
             }
             push_output(
                 ui_state,
-                &state.trace,
+                trace,
                 OutputKind::SystemInfo,
                 &format!("included {}", path_ref.display()),
             );
@@ -752,14 +756,14 @@ fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &
             exception,
         }) => {
             if !stdout.is_empty() {
-                push_output(ui_state, &state.trace, OutputKind::PythonStdout, &stdout);
+                push_output(ui_state, trace, OutputKind::PythonStdout, &stdout);
             }
             if !stderr.is_empty() {
-                push_output(ui_state, &state.trace, OutputKind::PythonStderr, &stderr);
+                push_output(ui_state, trace, OutputKind::PythonStderr, &stderr);
             }
             push_output(
                 ui_state,
-                &state.trace,
+                trace,
                 OutputKind::PythonTraceback,
                 &exception.traceback,
             );
@@ -767,7 +771,7 @@ fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &
         Ok(UserRunResult::Evaluated(_)) => {
             push_output(
                 ui_state,
-                &state.trace,
+                trace,
                 OutputKind::SystemError,
                 "internal error: include unexpectedly evaluated expression",
             );
@@ -775,7 +779,7 @@ fn execute_include_command(state: &mut AppState, ui_state: &mut UiState, path: &
         Err(err) => {
             push_output(
                 ui_state,
-                &state.trace,
+                trace,
                 OutputKind::SystemError,
                 &format!("include failed: {err}"),
             );
@@ -1523,8 +1527,8 @@ mod tests {
         format_history_output, format_tool_error_line, format_tool_request_line,
         format_tool_result_line, handle_mouse_event, input_cursor_position, is_safe_source_target,
         last_line_indent, mode_status_text, output_trace_kind, preview_text, prompt_for,
-        resolve_color_enabled_with, session_closed_message, status_right_text, timeline_max_scroll,
-        timeline_paragraph_scroll, toggle_mode,
+        render_include_command_result, resolve_color_enabled_with, session_closed_message,
+        status_right_text, timeline_max_scroll, timeline_paragraph_scroll, toggle_mode,
     };
     use crate::agent::AgentConfig;
     use crate::cli::timeline::OutputKind;
@@ -1846,6 +1850,86 @@ mod tests {
     }
 
     #[test]
+    fn execute_command_help_prints_help_text() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("help", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/help");
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(lines.iter().any(|line| line == "cmd> /help"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Available commands:"))
+        );
+        assert!(lines.iter().any(|line| line.contains("/inspect <expr>")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("/show_source <name>"))
+        );
+    }
+
+    #[test]
+    fn execute_command_clear_removes_prior_timeline_and_keeps_repl_usable() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("clear", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/help");
+        let before = timeline_text_lines(&ui_state);
+        assert!(
+            before
+                .iter()
+                .any(|line| line.contains("Available commands:"))
+        );
+
+        execute_command(&mut state, &mut ui_state, "/clear");
+        let after_clear = timeline_text_lines(&ui_state);
+        assert!(
+            !after_clear
+                .iter()
+                .any(|line| line.contains("Available commands:")),
+            "prior timeline output should be cleared"
+        );
+        assert!(after_clear.iter().any(|line| line == "cleared"));
+
+        execute_command(&mut state, &mut ui_state, "/mode");
+        let after_followup = timeline_text_lines(&ui_state);
+        assert!(after_followup.iter().any(|line| line == "mode: py"));
+    }
+
+    #[test]
+    fn execute_command_history_outputs_live_history_with_optional_limit() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("history", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/help");
+        execute_command(&mut state, &mut ui_state, "/mode ai");
+        execute_command(&mut state, &mut ui_state, "/history");
+
+        let lines = timeline_text_lines(&ui_state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("/help"));
+        assert!(joined.contains("/mode ai"));
+        assert!(joined.contains("/history"));
+
+        let mut ui_state = test_ui_state();
+        execute_command(&mut state, &mut ui_state, "/history 2");
+        let lines = timeline_text_lines(&ui_state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("/history"));
+        assert!(joined.contains("/history 2"));
+        assert!(
+            !joined.contains("/help"),
+            "limited history output should omit older entries"
+        );
+    }
+
+    #[test]
     fn execute_command_trace_prints_exact_path() {
         let dir = tempdir().expect("tempdir");
         let mut state = test_app_state("trace", dir.path());
@@ -1859,6 +1943,47 @@ mod tests {
         );
         let trace_path = state.trace.file_path().display().to_string();
         assert!(lines.contains(&trace_path));
+    }
+
+    #[test]
+    fn execute_command_inspect_prints_pretty_json() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("inspect", dir.path());
+        let mut ui_state = test_ui_state();
+        state
+            .python
+            .run_exec_input("value = {'a': 1, 'b': [2, 3]}")
+            .expect("seed python state");
+
+        execute_command(&mut state, &mut ui_state, "/inspect value");
+
+        let timeline_text = timeline_text_lines(&ui_state).join("\n");
+        assert!(timeline_text.contains("cmd> /inspect value"));
+        assert!(timeline_text.contains("\"repr\""));
+        assert!(timeline_text.contains("\"type\"") || timeline_text.contains("\"kind\""));
+        assert!(timeline_text.contains("{'a': 1, 'b': [2, 3]}"));
+    }
+
+    #[test]
+    fn execute_command_last_error_reports_none_and_then_traceback() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("last-error", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/last_error");
+        let lines = timeline_text_lines(&ui_state);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "no python exception recorded"),
+            "empty last_error branch should be shown"
+        );
+
+        let _ = state.python.run_user_input("1 / 0").expect("python run");
+        execute_command(&mut state, &mut ui_state, "/last_error");
+        let joined = timeline_text_lines(&ui_state).join("\n");
+        assert!(joined.contains("ZeroDivisionError"));
+        assert!(joined.contains("Traceback"));
     }
 
     #[test]
@@ -1889,6 +2014,19 @@ mod tests {
             state.python.eval_expr("value").expect("value").value_repr,
             "41"
         );
+    }
+
+    #[test]
+    fn include_internal_execution_error_branch_reports_include_failed() {
+        let mut ui_state = test_ui_state();
+        let dir = tempdir().expect("tempdir");
+        let trace = SessionTrace::create_in_temp_dir("include-failed", dir.path()).expect("trace");
+        let path = std::path::Path::new("broken.py");
+
+        render_include_command_result(&mut ui_state, &trace, path, Err(anyhow::anyhow!("boom")));
+
+        let lines = timeline_text_lines(&ui_state);
+        assert!(lines.iter().any(|line| line == "include failed: boom"));
     }
 
     #[test]
@@ -1964,6 +2102,64 @@ mod tests {
         assert!(
             !marker.exists(),
             "unsafe expression should not execute side effects"
+        );
+    }
+
+    #[test]
+    fn show_source_success_renders_source_for_safe_target() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("source-success", dir.path());
+        let mut ui_state = test_ui_state();
+
+        state
+            .python
+            .run_exec_input("def demo_fn(x):\n    return x + 1\n")
+            .expect("define function");
+
+        execute_command(&mut state, &mut ui_state, "/show_source demo_fn");
+
+        let joined = timeline_text_lines(&ui_state).join("\n");
+        assert!(joined.contains("def demo_fn(x):"));
+        assert!(joined.contains("return x + 1"));
+    }
+
+    #[test]
+    fn execute_command_mode_query_reports_current_mode() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("mode-query", dir.path());
+        let mut ui_state = test_ui_state();
+
+        execute_command(&mut state, &mut ui_state, "/mode");
+        assert!(
+            timeline_text_lines(&ui_state)
+                .iter()
+                .any(|line| line == "mode: py")
+        );
+
+        execute_command(&mut state, &mut ui_state, "/mode ai");
+        execute_command(&mut state, &mut ui_state, "/mode");
+
+        assert!(
+            timeline_text_lines(&ui_state)
+                .iter()
+                .any(|line| line == "mode: ai")
+        );
+    }
+
+    #[test]
+    fn execute_command_steps_on_explicitly_enables_steps() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = test_app_state("steps-on", dir.path());
+        let mut ui_state = test_ui_state();
+        ui_state.show_assistant_steps = false;
+
+        execute_command(&mut state, &mut ui_state, "/steps on");
+
+        assert!(ui_state.show_assistant_steps);
+        assert!(
+            timeline_text_lines(&ui_state)
+                .iter()
+                .any(|line| line == "steps: on")
         );
     }
 
