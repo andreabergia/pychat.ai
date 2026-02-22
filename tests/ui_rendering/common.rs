@@ -36,6 +36,18 @@ pub async fn press_enter(harness: &mut UiHarness) -> Result<()> {
         .await
 }
 
+pub async fn press_up(harness: &mut UiHarness) -> Result<()> {
+    harness
+        .send_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await
+}
+
+pub async fn press_down(harness: &mut UiHarness) -> Result<()> {
+    harness
+        .send_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+}
+
 pub async fn press_ctrl_t(harness: &mut UiHarness) -> Result<()> {
     harness
         .send_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
