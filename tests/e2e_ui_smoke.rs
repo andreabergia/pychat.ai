@@ -72,6 +72,42 @@ fn ctrl_t_toggles_show_agent_thinking_indicator() {
 
 #[test]
 #[serial]
+fn ctrl_c_exits_active_tui_session() {
+    let (mut session, _config_home, state_home) = spawn_app();
+
+    expect_text(&mut session, "py> ");
+
+    send_ctrl_c(&mut session);
+    let _ = session.expect(Eof);
+    thread::sleep(Duration::from_millis(25));
+
+    let (trace_path, _content) = read_trace_file(&state_home);
+    assert!(
+        trace_path.exists(),
+        "trace file should exist after Ctrl-C exit"
+    );
+}
+
+#[test]
+#[serial]
+fn ctrl_d_exits_active_tui_session() {
+    let (mut session, _config_home, state_home) = spawn_app();
+
+    expect_text(&mut session, "py> ");
+
+    send_ctrl_d(&mut session);
+    let _ = session.expect(Eof);
+    thread::sleep(Duration::from_millis(25));
+
+    let (trace_path, _content) = read_trace_file(&state_home);
+    assert!(
+        trace_path.exists(),
+        "trace file should exist after Ctrl-D exit"
+    );
+}
+
+#[test]
+#[serial]
 fn trace_command_prints_session_trace_path_and_stays_interactive() {
     let (mut session, _config_home, state_home) = spawn_app();
 
@@ -120,6 +156,14 @@ fn send_tab(session: &mut Session) {
 
 fn send_ctrl_t(session: &mut Session) {
     session.send([0x14]).expect("send Ctrl-T");
+}
+
+fn send_ctrl_c(session: &mut Session) {
+    session.send([0x03]).expect("send Ctrl-C");
+}
+
+fn send_ctrl_d(session: &mut Session) {
+    session.send([0x04]).expect("send Ctrl-D");
 }
 
 fn submit_line(session: &mut Session, line: &str) {
