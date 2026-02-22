@@ -14,6 +14,10 @@ PyChat.ai is an interactive Python REPL, with a built-in LLM assistant that can 
 - Ask assistant questions grounded in the current runtime
 - Use slash commands for quick inspection and session operations
 
+## License
+
+[AGPL v3.0](LICENSE)
+
 ## Quick Start
 
 ### Requirements
