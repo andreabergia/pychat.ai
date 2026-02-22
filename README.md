@@ -23,8 +23,32 @@ PyChat.ai is an interactive Python REPL, with a built-in LLM assistant that can 
 ### Requirements
 
 - Rust toolchain
-- Python installed locally
+- `uv` (recommended for reproducible Python builds)
+- Python installed locally (only needed if you are not using the pinned `uv` workflow)
 - `GEMINI_API_KEY` if you want assistant responses
+
+### Reproducible Python Build (Recommended)
+
+PyChat.ai embeds Python via PyO3, so the Rust binary links against the Python interpreter chosen at build time.
+For consistent local builds and CI, use the pinned project-managed Python runtime:
+
+```bash
+scripts/python/install-managed-python.sh
+```
+
+Run checks with the pinned interpreter:
+
+```bash
+scripts/dev/checks-with-pinned-python.sh
+```
+
+For PyO3 interpreter/linking diagnostics:
+
+```bash
+scripts/dev/pyo3-config-check.sh
+```
+
+See `docs/build-python.md` for details.
 
 ### Run
 
@@ -39,6 +63,15 @@ GEMINI_API_KEY=your_key cargo run
 ```
 
 You can also set `GEMINI_API_KEY` in `.env`.
+
+For reproducible local runs with the pinned interpreter:
+
+```bash
+PYTHON_BIN="$(scripts/python/resolve-python.sh)"
+PYTHONHOME="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)" \
+PYO3_PYTHON="$PYTHON_BIN" \
+cargo run
+```
 
 ## Basic Usage
 
@@ -67,3 +100,4 @@ Startup script behavior:
 - Command reference: `docs/command-reference.md`
 - Contributing: `docs/contributing.md`
 - Architecture plan: `docs/architecture.md`
+- Python build reproducibility: `docs/build-python.md`

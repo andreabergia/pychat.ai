@@ -2,14 +2,24 @@
 
 ## Setup
 
-1. Install Rust and Python.
+1. Install Rust and `uv`.
 2. Clone the repo.
-3. Run checks:
+3. Install the pinned project-managed Python runtime:
 
 ```bash
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+scripts/python/install-managed-python.sh
+```
+
+4. Run checks with the pinned interpreter:
+
+```bash
+scripts/dev/checks-with-pinned-python.sh
+```
+
+If PyO3 appears to bind to the wrong interpreter, run:
+
+```bash
+scripts/dev/pyo3-config-check.sh
 ```
 
 ## Workflow
@@ -18,6 +28,7 @@ cargo test --all-features
 - Use conventional commits.
 - Add/update tests for behavior changes.
 - Keep docs aligned with behavior.
+- Prefer the pinned Python workflow when building/testing locally.
 
 ## Quality Gates
 
