@@ -2270,7 +2270,7 @@ mod tests {
         let initial = harness.buffer_snapshot();
         assert!(initial.contains("Welcome to PyChat.ai"));
         assert!(initial.contains("Mode: Python"));
-        assert!(initial.contains("PyChat.ai | Session: phase2-ui"));
+        assert!(initial.contains("PyChat.ai | Tokens: 0 | Session: phase2-ui"));
 
         harness
             .send_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
