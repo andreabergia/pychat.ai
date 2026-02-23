@@ -206,7 +206,10 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
-    println!("{}", session_closed_message(state.trace.file_path()));
+    println!(
+        "{}",
+        session_closed_message(state.trace.file_path(), &ui_state.session_token_usage)
+    );
 
     run_result
 }
@@ -1238,9 +1241,13 @@ fn format_session_token_usage(usage: &LlmTokenUsageTotals) -> String {
     )
 }
 
-fn session_closed_message(trace_file_path: &std::path::Path) -> String {
+fn session_closed_message(
+    trace_file_path: &std::path::Path,
+    usage: &LlmTokenUsageTotals,
+) -> String {
     format!(
-        "PyChat.ai session ended.\nTrace file: {}",
+        "PyChat.ai session ended.\nTokens: {}\nTrace file: {}",
+        usage.total_tokens,
         trace_file_path.display()
     )
 }
@@ -1688,10 +1695,15 @@ mod tests {
     #[test]
     fn session_closed_message_includes_trace_file_path() {
         assert_eq!(
-            session_closed_message(std::path::Path::new(
-                "/tmp/pychat.ai/traces/session-abc123.log"
-            )),
-            "PyChat.ai session ended.\nTrace file: /tmp/pychat.ai/traces/session-abc123.log"
+            session_closed_message(
+                std::path::Path::new("/tmp/pychat.ai/traces/session-abc123.log"),
+                &LlmTokenUsageTotals {
+                    input_tokens: 12,
+                    output_tokens: 3,
+                    total_tokens: 15,
+                }
+            ),
+            "PyChat.ai session ended.\nTokens: 15\nTrace file: /tmp/pychat.ai/traces/session-abc123.log"
         );
     }
 
