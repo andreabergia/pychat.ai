@@ -1225,16 +1225,10 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
 }
 
 fn status_right_text(session_id: &str, usage: &LlmTokenUsageTotals) -> String {
-    if usage.is_zero() {
-        return format!("PyChat.ai | Session: {session_id}");
-    }
-
-    let total_text = if usage.total_tokens == 0 {
-        "?".to_string()
-    } else {
-        usage.total_tokens.to_string()
-    };
-    format!("PyChat.ai | Tokens S(total): {total_text} | Session: {session_id}")
+    format!(
+        "PyChat.ai | Tokens: {} | Session: {session_id}",
+        usage.total_tokens
+    )
 }
 
 fn format_session_token_usage(usage: &LlmTokenUsageTotals) -> String {
@@ -1660,7 +1654,7 @@ mod tests {
     fn status_right_text_includes_session_id() {
         assert_eq!(
             status_right_text("abc123", &LlmTokenUsageTotals::default()),
-            "PyChat.ai | Session: abc123"
+            "PyChat.ai | Tokens: 0 | Session: abc123"
         );
     }
 
@@ -1675,7 +1669,7 @@ mod tests {
                     total_tokens: 46,
                 }
             ),
-            "PyChat.ai | Tokens S(total): 46 | Session: abc123"
+            "PyChat.ai | Tokens: 46 | Session: abc123"
         );
     }
 
