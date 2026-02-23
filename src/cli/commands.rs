@@ -5,6 +5,7 @@ pub(crate) enum Command {
     Clear,
     History(Option<usize>),
     Trace,
+    Usage,
     Inspect { expr: String },
     LastError,
     Include { path: String },
@@ -35,7 +36,7 @@ impl ParseError {
     }
 }
 
-pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help                Show this command list\n  /mode [py|ai]        Show or switch active mode\n  /clear               Clear the timeline output\n  /history [n]         Show command/input history (or last n)\n  /trace               Show path to the current trace file\n  /inspect <expr>      Inspect a Python expression as structured JSON\n  /last_error          Show the last Python exception traceback\n  /include <file.py>   Execute a Python file in the current session\n  /run <file>          Execute a file path exactly as provided\n  /show_source <name>  Show source code for a function/class/module name\n  /steps [on|off]      Show or hide assistant reasoning steps";
+pub(crate) const HELP_TEXT: &str = "Available commands:\n  /help                Show this command list\n  /mode [py|ai]        Show or switch active mode\n  /clear               Clear the timeline output\n  /history [n]         Show command/input history (or last n)\n  /trace               Show path to the current trace file\n  /usage               Show current session LLM token usage totals\n  /inspect <expr>      Inspect a Python expression as structured JSON\n  /last_error          Show the last Python exception traceback\n  /include <file.py>   Execute a Python file in the current session\n  /run <file>          Execute a file path exactly as provided\n  /show_source <name>  Show source code for a function/class/module name\n  /steps [on|off]      Show or hide assistant reasoning steps";
 
 pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
     if !line.starts_with('/') {
@@ -61,6 +62,7 @@ pub(crate) fn parse_command(line: &str) -> Result<Command, ParseError> {
         "clear" => expect_no_args(rest, Command::Clear, "usage: /clear"),
         "history" => parse_history(rest),
         "trace" => expect_no_args(rest, Command::Trace, "usage: /trace"),
+        "usage" => expect_no_args(rest, Command::Usage, "usage: /usage"),
         "inspect" => parse_required_text_arg(rest, "usage: /inspect <expr>")
             .map(|expr| Command::Inspect { expr }),
         "last_error" => expect_no_args(rest, Command::LastError, "usage: /last_error"),
@@ -169,6 +171,7 @@ mod tests {
             "/clear",
             "/history [n]",
             "/trace",
+            "/usage",
             "/inspect <expr>",
             "/last_error",
             "/include <file.py>",
@@ -185,6 +188,7 @@ mod tests {
         assert_eq!(parse_command("/help").expect("help"), Command::Help);
         assert_eq!(parse_command("/clear").expect("clear"), Command::Clear);
         assert_eq!(parse_command("/trace").expect("trace"), Command::Trace);
+        assert_eq!(parse_command("/usage").expect("usage"), Command::Usage);
         assert_eq!(
             parse_command("/last_error").expect("last_error"),
             Command::LastError
