@@ -6,6 +6,7 @@ use crate::cli::timeline::{
 };
 use crate::config::{ThemeConfig, ThemeToken};
 use crate::llm::gemini::GeminiProvider;
+use crate::llm::provider::LlmTokenUsageTotals;
 use crate::python::{
     CapabilityError, CapabilityProvider, InputCompleteness, PythonSession, UserRunResult,
 };
@@ -67,6 +68,7 @@ struct UiState {
     history_index: Option<usize>,
     timeline_scroll: usize,
     timeline: Timeline,
+    session_token_usage: LlmTokenUsageTotals,
     should_quit: bool,
     theme: Theme,
 }
@@ -88,6 +90,7 @@ impl UiState {
             history_index: None,
             timeline_scroll: 0,
             timeline: Timeline::new(),
+            session_token_usage: LlmTokenUsageTotals::default(),
             should_quit: false,
             theme: Theme::from_config(color_enabled, theme_config),
         }
@@ -192,6 +195,9 @@ pub async fn run_repl(state: &mut AppState) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let run_result = run_tui_loop(&mut terminal, state, &mut ui_state).await;
+    state
+        .trace
+        .log_session_token_summary(&ui_state.session_token_usage);
 
     disable_raw_mode()?;
     execute!(
@@ -549,7 +555,10 @@ async fn submit_current_line(
                     state
                         .trace
                         .log_output(output_trace_kind(OutputKind::AssistantText), &answer.text);
+                    let turn_usage = answer.token_usage.clone();
+                    ui_state.session_token_usage.add_totals(&turn_usage);
                     if let Some(turn) = ui_state.assistant_turn_mut(turn_index) {
+                        turn.token_usage = Some(turn_usage);
                         turn.state = AssistantTurnState::CompletedText(answer.text);
                     }
                 }
@@ -975,9 +984,12 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     let status_left = Paragraph::new(mode_text).style(ui_state.theme.style(ThemeToken::Status));
     frame.render_widget(status_left, layout.status);
 
-    let status_right = Paragraph::new(status_right_text(&ui_state.session_id))
-        .style(ui_state.theme.style(ThemeToken::Status))
-        .alignment(ratatui::layout::Alignment::Right);
+    let status_right = Paragraph::new(status_right_text(
+        &ui_state.session_id,
+        &ui_state.session_token_usage,
+    ))
+    .style(ui_state.theme.style(ThemeToken::Status))
+    .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(status_right, layout.status);
 
     let (cursor_row, cursor_col) = input_cursor_position(ui_state.current_input());
@@ -1204,8 +1216,17 @@ fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
     format!("{mode_text} | Show agent thinking: {steps_text} (Ctrl-T)")
 }
 
-fn status_right_text(session_id: &str) -> String {
-    format!("PyChat.ai | Session: {session_id}")
+fn status_right_text(session_id: &str, usage: &LlmTokenUsageTotals) -> String {
+    if usage.is_zero() {
+        return format!("PyChat.ai | Session: {session_id}");
+    }
+
+    let total_text = if usage.total_tokens == 0 {
+        "?".to_string()
+    } else {
+        usage.total_tokens.to_string()
+    };
+    format!("PyChat.ai | Tokens S(total): {total_text} | Session: {session_id}")
 }
 
 fn session_closed_message(trace_file_path: &std::path::Path) -> String {
@@ -1533,6 +1554,7 @@ mod tests {
     use crate::agent::AgentConfig;
     use crate::cli::timeline::OutputKind;
     use crate::config::ThemeConfig;
+    use crate::llm::provider::LlmTokenUsageTotals;
     use crate::python::PythonSession;
     use crate::trace::SessionTrace;
     use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
@@ -1620,7 +1642,25 @@ mod tests {
 
     #[test]
     fn status_right_text_includes_session_id() {
-        assert_eq!(status_right_text("abc123"), "PyChat.ai | Session: abc123");
+        assert_eq!(
+            status_right_text("abc123", &LlmTokenUsageTotals::default()),
+            "PyChat.ai | Session: abc123"
+        );
+    }
+
+    #[test]
+    fn status_right_text_shows_session_token_total_only() {
+        assert_eq!(
+            status_right_text(
+                "abc123",
+                &LlmTokenUsageTotals {
+                    input_tokens: 12,
+                    output_tokens: 34,
+                    total_tokens: 46,
+                }
+            ),
+            "PyChat.ai | Tokens S(total): 46 | Session: abc123"
+        );
     }
 
     #[test]

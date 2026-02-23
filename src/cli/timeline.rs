@@ -1,5 +1,6 @@
 use crate::cli::theme::Theme;
 use crate::config::ThemeToken;
+use crate::llm::provider::LlmTokenUsageTotals;
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub(crate) struct AssistantTurn {
     pub(crate) prompt: String,
     pub(crate) events: Vec<AssistantStepEvent>,
     pub(crate) state: AssistantTurnState,
+    pub(crate) token_usage: Option<LlmTokenUsageTotals>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +88,7 @@ impl Timeline {
                 prompt,
                 events: Vec::new(),
                 state: AssistantTurnState::InFlight,
+                token_usage: None,
             }));
         index
     }
@@ -249,6 +252,7 @@ impl TimelineWidget for AssistantTurnWidget<'_> {
                             .style(output_token_for(OutputKind::AssistantText)),
                     )));
                 }
+                render_turn_token_total(context, lines, self.turn.token_usage.as_ref());
             }
             AssistantTurnState::CompletedError(message) => {
                 for line in split_output_lines(message) {
@@ -259,9 +263,35 @@ impl TimelineWidget for AssistantTurnWidget<'_> {
                             .style(output_token_for(OutputKind::SystemError)),
                     )));
                 }
+                render_turn_token_total(context, lines, self.turn.token_usage.as_ref());
             }
         }
     }
+}
+
+fn render_turn_token_total(
+    context: &RenderContext<'_>,
+    lines: &mut Vec<Line<'static>>,
+    usage: Option<&LlmTokenUsageTotals>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+    if usage.is_zero() {
+        return;
+    }
+
+    let total_text = if usage.total_tokens == 0 {
+        "?".to_string()
+    } else {
+        usage.total_tokens.to_string()
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  Tokens (turn): {total_text}"),
+        context
+            .theme
+            .style(output_token_for(OutputKind::SystemInfo)),
+    )));
 }
 
 fn widget_for_entry(entry: &TimelineEntry) -> Box<dyn TimelineWidget + '_> {
@@ -308,6 +338,7 @@ mod tests {
     };
     use crate::cli::theme::Theme;
     use crate::config::ThemeToken;
+    use crate::llm::provider::LlmTokenUsageTotals;
 
     fn text_lines(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
         lines.into_iter().map(|line| line.to_string()).collect()
@@ -328,6 +359,11 @@ mod tests {
             },
         ];
         turn.state = AssistantTurnState::CompletedText("x is an int".to_string());
+        turn.token_usage = Some(LlmTokenUsageTotals {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+        });
         timeline
     }
 
@@ -389,6 +425,7 @@ mod tests {
                 .any(|line| line.starts_with("  <- Inspection complete:"))
         );
         assert!(lines.iter().any(|line| line == "x is an int"));
+        assert!(lines.iter().any(|line| line == "  Tokens (turn): 15"));
     }
 
     #[test]
@@ -447,6 +484,11 @@ mod tests {
             .expect("assistant turn index should exist");
         turn.state =
             AssistantTurnState::CompletedError("Assistant request failed: boom".to_string());
+        turn.token_usage = Some(LlmTokenUsageTotals {
+            input_tokens: 2,
+            output_tokens: 1,
+            total_tokens: 3,
+        });
 
         let lines = text_lines(timeline.render_lines(&Theme::new(false), false));
         assert!(
@@ -454,6 +496,7 @@ mod tests {
                 .iter()
                 .any(|line| line == "Assistant request failed: boom")
         );
+        assert!(lines.iter().any(|line| line == "  Tokens (turn): 3"));
     }
 
     #[test]
