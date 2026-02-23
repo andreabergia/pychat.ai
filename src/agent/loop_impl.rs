@@ -8,7 +8,7 @@ use crate::agent::dispatch::{FunctionCallSpec, dispatch_calls, tool_declarations
 use crate::agent::prompt::AGENT_SYSTEM_PROMPT;
 use crate::llm::provider::{
     AssistantCandidate, AssistantInput, AssistantMessage, AssistantPart, AssistantRole,
-    LlmProvider, ToolCallingMode,
+    LlmProvider, LlmTokenUsage, LlmTokenUsageTotals, ToolCallingMode,
 };
 use crate::python::CapabilityProvider;
 
@@ -35,6 +35,7 @@ impl Default for AgentConfig {
 pub struct AgentAnswer {
     pub text: String,
     pub degraded: bool,
+    pub token_usage: LlmTokenUsageTotals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,7 @@ pub async fn run_question_with_events<
     let tools = tool_declarations();
     let total_deadline = Instant::now() + Duration::from_millis(config.total_timeout_ms);
     let mut invalid_response_attempts = 0usize;
+    let mut token_usage = LlmTokenUsageTotals::default();
 
     for step in 1..=config.max_steps {
         on_event(AgentProgressEvent::StepStarted { step });
@@ -91,6 +93,7 @@ pub async fn run_question_with_events<
         if now >= total_deadline {
             return Ok(degraded(
                 "Assistant hit the total time limit while reasoning about your question.",
+                token_usage,
             ));
         }
 
@@ -112,21 +115,25 @@ pub async fn run_question_with_events<
         let output = match llm {
             Ok(Ok(output)) => output,
             Ok(Err(err)) => {
-                return Ok(degraded(format!(
-                    "Assistant request failed while reasoning: {err}"
-                )));
+                return Ok(degraded(
+                    format!("Assistant request failed while reasoning: {err}"),
+                    token_usage,
+                ));
             }
             Err(_) => {
                 return Ok(degraded(
                     "Assistant hit a per-step timeout while reasoning about your question.",
+                    token_usage,
                 ));
             }
         };
+        token_usage.add_usage(output.usage.as_ref());
 
         let Some(candidate) = select_candidate(&output.candidates) else {
             if invalid_response_attempts >= config.invalid_response_retries {
                 return Ok(degraded(
                     "Assistant returned an invalid response repeatedly and could not complete the tool flow.",
+                    token_usage,
                 ));
             }
             invalid_response_attempts += 1;
@@ -150,12 +157,14 @@ pub async fn run_question_with_events<
                 return Ok(AgentAnswer {
                     text,
                     degraded: false,
+                    token_usage,
                 });
             }
 
             if invalid_response_attempts >= config.invalid_response_retries {
                 return Ok(degraded(
                     "Assistant returned an empty response repeatedly and could not complete the tool flow.",
+                    token_usage,
                 ));
             }
             invalid_response_attempts += 1;
@@ -201,24 +210,29 @@ pub async fn run_question_with_events<
         let per_step = Duration::from_millis(config.per_step_timeout_ms);
         let timeout_budget = per_step.min(remaining);
         if !timeout_budget.is_zero()
-            && let Some(text) = finalize_without_tools(provider, &messages, timeout_budget).await
+            && let Some((text, usage)) =
+                finalize_without_tools(provider, &messages, timeout_budget).await
         {
+            token_usage.add_usage(usage.as_ref());
             return Ok(AgentAnswer {
                 text,
                 degraded: true,
+                token_usage,
             });
         }
     }
 
     Ok(degraded(
         "Assistant reached the step limit while reasoning about your question.",
+        token_usage,
     ))
 }
 
-fn degraded(message: impl Into<String>) -> AgentAnswer {
+fn degraded(message: impl Into<String>, token_usage: LlmTokenUsageTotals) -> AgentAnswer {
     AgentAnswer {
         text: message.into(),
         degraded: true,
+        token_usage,
     }
 }
 
@@ -301,7 +315,7 @@ async fn finalize_without_tools<P: LlmProvider>(
     provider: &P,
     messages: &[AssistantMessage],
     timeout_budget: Duration,
-) -> Option<String> {
+) -> Option<(String, Option<LlmTokenUsage>)> {
     let llm = timeout(
         timeout_budget,
         provider.generate(AssistantInput {
@@ -317,9 +331,14 @@ async fn finalize_without_tools<P: LlmProvider>(
     .ok()?
     .ok()?;
 
+    let usage = llm.usage.clone();
     let candidate = select_candidate(&llm.candidates)?;
     let text = extract_text(&candidate.message.parts);
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some((text, usage))
+    }
 }
 
 fn extract_function_calls(parts: &[AssistantPart]) -> Vec<FunctionCallSpec> {
@@ -369,7 +388,7 @@ mod tests {
     use crate::agent::{AgentConfig, run_question_with_events};
     use crate::llm::provider::{
         AssistantCandidate, AssistantInput, AssistantMessage, AssistantOutput, AssistantPart,
-        AssistantRole, LlmError, LlmProvider,
+        AssistantRole, LlmError, LlmProvider, LlmTokenUsage,
     };
     use crate::python::PythonSession;
 
@@ -402,6 +421,7 @@ mod tests {
     async fn run_question_handles_one_tool_call_then_final_text() {
         let provider = FakeProvider::new(vec![
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -417,6 +437,7 @@ mod tests {
                 }],
             }),
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -449,6 +470,7 @@ mod tests {
     #[tokio::test]
     async fn run_question_skips_unusable_first_candidate() {
         let provider = FakeProvider::new(vec![Ok(AssistantOutput {
+            usage: None,
             candidates: vec![
                 AssistantCandidate {
                     message: AssistantMessage {
@@ -494,6 +516,7 @@ mod tests {
     async fn run_question_retries_once_after_invalid_response() {
         let provider = FakeProvider::new(vec![
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -507,6 +530,7 @@ mod tests {
                 }],
             }),
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -540,6 +564,7 @@ mod tests {
     async fn run_question_handles_multiple_tool_calls_in_one_turn() {
         let provider = FakeProvider::new(vec![
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -563,6 +588,7 @@ mod tests {
                 }],
             }),
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -593,9 +619,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_question_aggregates_token_usage_across_llm_calls() {
+        let provider = FakeProvider::new(vec![
+            Ok(AssistantOutput {
+                usage: Some(LlmTokenUsage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(2),
+                    total_tokens: Some(12),
+                }),
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::FunctionCall {
+                            id: Some("c1".to_string()),
+                            name: "list_globals".to_string(),
+                            args_json: json!({}),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+            Ok(AssistantOutput {
+                usage: Some(LlmTokenUsage {
+                    input_tokens: Some(20),
+                    output_tokens: Some(5),
+                    total_tokens: Some(25),
+                }),
+                candidates: vec![AssistantCandidate {
+                    message: AssistantMessage {
+                        role: AssistantRole::Model,
+                        parts: vec![AssistantPart::Text {
+                            text: "done".to_string(),
+                            thought_signature: None,
+                        }],
+                    },
+                    finish_reason: Some("STOP".to_string()),
+                    safety_blocked: false,
+                }],
+            }),
+        ]);
+
+        let session = PythonSession::initialize().expect("python");
+        let answer = run_question_with_events(
+            &provider,
+            &session,
+            "what globals?",
+            &AgentConfig::default(),
+            &mut |_| {},
+        )
+        .await
+        .expect("answer");
+
+        assert_eq!(answer.token_usage.input_tokens, 30);
+        assert_eq!(answer.token_usage.output_tokens, 7);
+        assert_eq!(answer.token_usage.total_tokens, 37);
+    }
+
+    #[tokio::test]
     async fn run_question_degrades_after_retry_budget_exhausted() {
         let provider = FakeProvider::new(vec![
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -606,6 +692,7 @@ mod tests {
                 }],
             }),
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -636,6 +723,7 @@ mod tests {
     async fn run_question_uses_no_tool_fallback_after_step_limit() {
         let provider = FakeProvider::new(vec![
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -651,6 +739,7 @@ mod tests {
                 }],
             }),
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
@@ -666,6 +755,7 @@ mod tests {
                 }],
             }),
             Ok(AssistantOutput {
+                usage: None,
                 candidates: vec![AssistantCandidate {
                     message: AssistantMessage {
                         role: AssistantRole::Model,
