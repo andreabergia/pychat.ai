@@ -16,7 +16,7 @@ async fn initial_render_shows_welcome_and_status_with_session() -> Result<()> {
     let status = status_snapshot(&harness)?;
     assert!(status.contains("Mode: Python"));
     assert!(status.contains("Show agent thinking: On (Ctrl-T)"));
-    assert!(status.contains("PyChat.ai | Session: phase3-welcome"));
+    assert!(status.contains("PyChat.ai | Tokens: 0 | Session: phase3-welcome"));
 
     Ok(())
 }

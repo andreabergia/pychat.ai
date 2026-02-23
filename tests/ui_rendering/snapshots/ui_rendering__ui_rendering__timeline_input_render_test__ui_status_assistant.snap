@@ -3,4 +3,4 @@ source: tests/ui_rendering/timeline_input_render_test.rs
 assertion_line: 123
 expression: status_snapshot(&harness)?
 ---
-Mode: AI Assistant | Show agent thinking: On (Ctrl-T)           PyChat.ai | Session: phase3-snapshot
+Mode: AI Assistant | Show agent thinking: On (Ctrl-TPyChat.ai | Tokens: 0 | Session: phase3-snapshot
