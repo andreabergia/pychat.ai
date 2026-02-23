@@ -36,3 +36,26 @@ jobs:
       - name: Inspect macOS binary linkage
         if: runner.os == 'macOS'
         run: otool -L target/debug/pychat_ai
+
+  package-macos:
+    name: package-macos
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install pinned Python
+        run: scripts/python/install-managed-python.sh
+
+      - name: Package macOS dist folder
+        run: scripts/dist/package-macos.sh
+
+      - name: Smoke test moved macOS dist folder
+        run: scripts/dist/smoke-macos.sh
