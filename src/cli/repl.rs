@@ -639,6 +639,14 @@ fn execute_command(state: &mut AppState, ui_state: &mut UiState, line: &str) {
                 &state.trace.file_path().display().to_string(),
             );
         }
+        Command::Usage => {
+            push_output(
+                ui_state,
+                &state.trace,
+                OutputKind::SystemInfo,
+                &format_session_token_usage(&ui_state.session_token_usage),
+            );
+        }
         Command::Inspect { expr } => match state.python.inspect(&expr) {
             Ok(info) => match serde_json::to_string_pretty(&info.value) {
                 Ok(pretty) => push_output(ui_state, &state.trace, OutputKind::SystemInfo, &pretty),
@@ -1229,6 +1237,13 @@ fn status_right_text(session_id: &str, usage: &LlmTokenUsageTotals) -> String {
     format!("PyChat.ai | Tokens S(total): {total_text} | Session: {session_id}")
 }
 
+fn format_session_token_usage(usage: &LlmTokenUsageTotals) -> String {
+    format!(
+        "session tokens in={} out={} total={}",
+        usage.input_tokens, usage.output_tokens, usage.total_tokens
+    )
+}
+
 fn session_closed_message(trace_file_path: &std::path::Path) -> String {
     format!(
         "PyChat.ai session ended.\nTrace file: {}",
@@ -1545,11 +1560,12 @@ pub mod test_support {
 mod tests {
     use super::{
         AppState, Mode, UiState, append_newline_with_indent, area_contains_point, execute_command,
-        format_history_output, format_tool_error_line, format_tool_request_line,
-        format_tool_result_line, handle_mouse_event, input_cursor_position, is_safe_source_target,
-        last_line_indent, mode_status_text, output_trace_kind, preview_text, prompt_for,
-        render_include_command_result, resolve_color_enabled_with, session_closed_message,
-        status_right_text, timeline_max_scroll, timeline_paragraph_scroll, toggle_mode,
+        format_history_output, format_session_token_usage, format_tool_error_line,
+        format_tool_request_line, format_tool_result_line, handle_mouse_event,
+        input_cursor_position, is_safe_source_target, last_line_indent, mode_status_text,
+        output_trace_kind, preview_text, prompt_for, render_include_command_result,
+        resolve_color_enabled_with, session_closed_message, status_right_text, timeline_max_scroll,
+        timeline_paragraph_scroll, toggle_mode,
     };
     use crate::agent::AgentConfig;
     use crate::cli::timeline::OutputKind;
@@ -1660,6 +1676,18 @@ mod tests {
                 }
             ),
             "PyChat.ai | Tokens S(total): 46 | Session: abc123"
+        );
+    }
+
+    #[test]
+    fn format_session_token_usage_includes_in_out_total() {
+        assert_eq!(
+            format_session_token_usage(&LlmTokenUsageTotals {
+                input_tokens: 3,
+                output_tokens: 2,
+                total_tokens: 5,
+            }),
+            "session tokens in=3 out=2 total=5"
         );
     }
 
