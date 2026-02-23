@@ -50,6 +50,9 @@ scripts/dev/pyo3-config-check.sh
 
 See `docs/build-python.md` for details.
 
+On macOS, an experimental portable `dist/` packaging workflow is also available (`scripts/dist/package-macos.sh`
+and `scripts/dist/smoke-macos.sh`). See `docs/build-python.md` for the packaging steps and verification checks.
+
 ### Run
 
 ```bash

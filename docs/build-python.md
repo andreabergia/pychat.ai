@@ -71,3 +71,55 @@ ldd target/debug/pychat_ai
 
 In Phase 1, absolute Python library paths may still appear in the binary. Eliminating those for portable
 distribution is Phase 2 work.
+
+## Phase 2: macOS portable `dist/` packaging
+
+Phase 2 adds a macOS packaging workflow that builds a relocatable `dist/` folder containing:
+
+- a wrapper launcher (`dist/pychat_ai`)
+- the real Rust binary (`dist/bin/pychat_ai-bin`)
+- a bundled Python runtime copied from the uv-managed pinned interpreter (`dist/python/runtime/...`)
+
+The packaging script patches the Rust binary's `libpython` linkage to a loader-relative path and rewrites the
+bundled `libpython` install name so the package can run after being moved to a different path.
+
+Build and package on macOS:
+
+```bash
+scripts/dist/package-macos.sh
+```
+
+Smoke-test relocatability by copying `dist/` to a temporary path and running the packaged launcher there:
+
+```bash
+scripts/dist/smoke-macos.sh
+```
+
+The packaged launcher sets:
+
+- `PYTHONHOME=<dist>/python/runtime`
+- `PYTHONNOUSERSITE=1`
+
+This ensures the embedded interpreter resolves the bundled stdlib/runtime instead of user or system Python
+locations.
+
+### Packaging verification (macOS)
+
+Inspect the packaged binary linkage (should use `@loader_path`, not `/opt/homebrew/...` or repo-local
+`.local/python/...`):
+
+```bash
+otool -L dist/bin/pychat_ai-bin
+```
+
+Inspect the bundled `libpython` install ID (should be non-absolute):
+
+```bash
+otool -D dist/python/runtime/lib/libpython*.dylib
+```
+
+Run the non-interactive embedded-Python startup smoke directly:
+
+```bash
+dist/pychat_ai --smoke-python
+```
