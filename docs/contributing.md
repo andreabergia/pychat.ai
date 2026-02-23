@@ -2,14 +2,24 @@
 
 ## Setup
 
-1. Install Rust and Python.
+1. Install Rust and `uv`.
 2. Clone the repo.
-3. Run checks:
+3. Install the pinned Python version from `.python-version`:
 
 ```bash
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+scripts/python/install-managed-python.sh
+```
+
+4. Run checks with the pinned interpreter:
+
+```bash
+scripts/dev/checks-with-pinned-python.sh
+```
+
+If PyO3/Python linkage looks wrong locally, run:
+
+```bash
+scripts/dev/pyo3-config-check.sh
 ```
 
 ## Workflow
@@ -26,6 +36,20 @@ Before opening a PR, all of these should pass:
 - formatting
 - clippy (warnings denied)
 - full test suite
+
+## CI Matrix
+
+GitHub Actions CI runs the `checks` job on:
+
+- `ubuntu-latest`
+- `macos-latest`
+
+Each matrix job installs `uv`, installs the pinned Python from `.python-version`, and runs
+`scripts/dev/checks-with-pinned-python.sh`.
+
+The macOS matrix job also runs:
+
+- `otool -L target/debug/pychat_ai`
 
 ## Commit Style
 

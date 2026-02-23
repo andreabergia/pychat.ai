@@ -23,8 +23,32 @@ PyChat.ai is an interactive Python REPL, with a built-in LLM assistant that can 
 ### Requirements
 
 - Rust toolchain
-- Python installed locally
+- `uv` (for the pinned Python workflow used in CI)
+- Python installed locally (optional if using the pinned `uv` workflow)
 - `GEMINI_API_KEY` if you want assistant responses
+
+### Reproducible Build / Test Environment (Pinned Python)
+
+CI uses a pinned Python version from `.python-version` installed via `uv`, and local development can use the
+same workflow.
+
+Install the pinned Python:
+
+```bash
+scripts/python/install-managed-python.sh
+```
+
+Run project checks with the pinned interpreter:
+
+```bash
+scripts/dev/checks-with-pinned-python.sh
+```
+
+Print PyO3 interpreter config (debugging):
+
+```bash
+scripts/dev/pyo3-config-check.sh
+```
 
 ### Run
 
@@ -67,3 +91,13 @@ Startup script behavior:
 - Command reference: `docs/command-reference.md`
 - Contributing: `docs/contributing.md`
 - Architecture plan: `docs/architecture.md`
+
+## CI
+
+GitHub Actions runs the pinned-Python checks workflow on this matrix:
+
+- `ubuntu-latest`
+- `macos-latest`
+
+Both jobs install `uv`, install the pinned Python from `.python-version`, and run
+`scripts/dev/checks-with-pinned-python.sh`.
