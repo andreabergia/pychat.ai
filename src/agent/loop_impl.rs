@@ -214,11 +214,13 @@ pub async fn run_question_with_events<
                 finalize_without_tools(provider, &messages, timeout_budget).await
         {
             token_usage.add_usage(usage.as_ref());
-            return Ok(AgentAnswer {
-                text,
-                degraded: true,
-                token_usage,
-            });
+            if let Some(text) = text {
+                return Ok(AgentAnswer {
+                    text,
+                    degraded: true,
+                    token_usage,
+                });
+            }
         }
     }
 
@@ -315,7 +317,7 @@ async fn finalize_without_tools<P: LlmProvider>(
     provider: &P,
     messages: &[AssistantMessage],
     timeout_budget: Duration,
-) -> Option<(String, Option<LlmTokenUsage>)> {
+) -> Option<(Option<String>, Option<LlmTokenUsage>)> {
     let llm = timeout(
         timeout_budget,
         provider.generate(AssistantInput {
@@ -334,11 +336,8 @@ async fn finalize_without_tools<P: LlmProvider>(
     let usage = llm.usage.clone();
     let candidate = select_candidate(&llm.candidates)?;
     let text = extract_text(&candidate.message.parts);
-    if text.is_empty() {
-        None
-    } else {
-        Some((text, usage))
-    }
+    let text = if text.is_empty() { None } else { Some(text) };
+    Some((text, usage))
 }
 
 fn extract_function_calls(parts: &[AssistantPart]) -> Vec<FunctionCallSpec> {
@@ -807,6 +806,46 @@ mod tests {
         assert!(answer.degraded);
         assert!(answer.text.contains("step limit"));
         assert!(provider.seen_inputs.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_question_counts_fallback_usage_even_without_final_text() {
+        let provider = FakeProvider::new(vec![Ok(AssistantOutput {
+            usage: Some(LlmTokenUsage {
+                input_tokens: Some(11),
+                output_tokens: Some(3),
+                total_tokens: Some(14),
+            }),
+            candidates: vec![AssistantCandidate {
+                message: AssistantMessage {
+                    role: AssistantRole::Model,
+                    parts: vec![AssistantPart::FunctionCall {
+                        id: Some("c1".to_string()),
+                        name: "list_globals".to_string(),
+                        args_json: json!({}),
+                        thought_signature: None,
+                    }],
+                },
+                finish_reason: Some("STOP".to_string()),
+                safety_blocked: false,
+            }],
+        })]);
+
+        let config = AgentConfig {
+            max_steps: 0,
+            ..AgentConfig::default()
+        };
+        let session = PythonSession::initialize().expect("python");
+        let answer =
+            run_question_with_events(&provider, &session, "change f", &config, &mut |_| {})
+                .await
+                .expect("answer");
+
+        assert!(answer.degraded);
+        assert!(answer.text.contains("step limit"));
+        assert_eq!(answer.token_usage.input_tokens, 11);
+        assert_eq!(answer.token_usage.output_tokens, 3);
+        assert_eq!(answer.token_usage.total_tokens, 14);
     }
 
     #[test]
