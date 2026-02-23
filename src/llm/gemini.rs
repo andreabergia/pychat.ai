@@ -3,7 +3,8 @@ use serde_json::Value;
 
 use super::provider::{
     AssistantCandidate, AssistantInput, AssistantMessage, AssistantOutput, AssistantPart,
-    AssistantRole, FunctionDeclaration, LlmError, LlmProvider, LlmResult, ToolCallingMode,
+    AssistantRole, FunctionDeclaration, LlmError, LlmProvider, LlmResult, LlmTokenUsage,
+    ToolCallingMode,
 };
 use crate::http::client::HttpClient;
 
@@ -168,7 +169,14 @@ impl GeminiProvider {
             return Err(LlmError::EmptyCandidates);
         }
 
-        Ok(AssistantOutput { candidates })
+        Ok(AssistantOutput {
+            candidates,
+            usage: resp.usage_metadata.map(|usage| LlmTokenUsage {
+                input_tokens: usage.prompt_token_count,
+                output_tokens: usage.candidates_token_count,
+                total_tokens: usage.total_token_count,
+            }),
+        })
     }
 
     fn to_output_part(part: GeminiPartResponse) -> Option<AssistantPart> {
@@ -307,6 +315,19 @@ struct GeminiFunctionCallingConfig {
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerateResponse {
     candidates: Vec<GeminiCandidate>,
+    #[serde(default)]
+    usage_metadata: Option<GeminiUsageMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiUsageMetadata {
+    #[serde(default)]
+    prompt_token_count: Option<u32>,
+    #[serde(default)]
+    candidates_token_count: Option<u32>,
+    #[serde(default)]
+    total_token_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -405,6 +426,46 @@ mod tests {
                 ..
             }) if name == "list_globals" && sig == "abc123"
         ));
+        assert!(out.usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn generate_parses_usage_metadata() {
+        let server = MockServer::start().await;
+        let body = r#"{
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 7,
+                "totalTokenCount": 18
+            },
+            "candidates": [
+                {"finishReason":"STOP","content":{"parts":[{"text":"hi"}]}}
+            ]
+        }"#;
+
+        Mock::given(method("POST"))
+            .and(path("/v1beta/models/test-model:generateContent"))
+            .and(query_param("key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+
+        let provider = GeminiProvider::new(
+            HttpClient::new(reqwest::Client::new()),
+            Some("test-key".to_string()),
+            "test-model".to_string(),
+            server.uri(),
+        )
+        .expect("provider");
+
+        let out = provider
+            .generate(basic_input())
+            .await
+            .expect("success response");
+        let usage = out.usage.expect("usage");
+        assert_eq!(usage.input_tokens, Some(11));
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.total_tokens, Some(18));
     }
 
     #[tokio::test]

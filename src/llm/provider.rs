@@ -65,8 +65,51 @@ pub struct AssistantCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlmTokenUsage {
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub total_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LlmTokenUsageTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+impl LlmTokenUsageTotals {
+    pub fn add_usage(&mut self, usage: Option<&LlmTokenUsage>) {
+        let Some(usage) = usage else {
+            return;
+        };
+
+        if let Some(value) = usage.input_tokens {
+            self.input_tokens = self.input_tokens.saturating_add(u64::from(value));
+        }
+        if let Some(value) = usage.output_tokens {
+            self.output_tokens = self.output_tokens.saturating_add(u64::from(value));
+        }
+        if let Some(value) = usage.total_tokens {
+            self.total_tokens = self.total_tokens.saturating_add(u64::from(value));
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.input_tokens == 0 && self.output_tokens == 0 && self.total_tokens == 0
+    }
+
+    pub fn add_totals(&mut self, other: &Self) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssistantOutput {
     pub candidates: Vec<AssistantCandidate>,
+    pub usage: Option<LlmTokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
