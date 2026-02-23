@@ -47,9 +47,10 @@ GitHub Actions CI runs the `checks` job on:
 Each matrix job installs `uv`, installs the pinned Python from `.python-version`, and runs
 `scripts/dev/checks-with-pinned-python.sh`.
 
-The macOS matrix job also runs:
+Additional linkage diagnostics run in CI:
 
 - `otool -L target/debug/pychat_ai`
+- `ldd` on `target/debug/deps/pychat_ai-*` test binaries (Linux only)
 
 ## Commit Style
 

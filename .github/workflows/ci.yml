@@ -36,3 +36,8 @@ jobs:
       - name: Inspect macOS binary linkage
         if: runner.os == 'macOS'
         run: otool -L target/debug/pychat_ai
+
+      - name: Inspect Linux test binary linkage
+        if: runner.os == 'Linux'
+        run: |
+          find target/debug/deps -maxdepth 1 -type f -name 'pychat_ai-*' -exec ldd {} \; || true

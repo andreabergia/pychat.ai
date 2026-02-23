@@ -100,4 +100,5 @@ GitHub Actions runs the pinned-Python checks workflow on this matrix:
 - `macos-latest`
 
 Both jobs install `uv`, install the pinned Python from `.python-version`, and run
-`scripts/dev/checks-with-pinned-python.sh`.
+`scripts/dev/checks-with-pinned-python.sh`. They also both check the binary linkage.
+
