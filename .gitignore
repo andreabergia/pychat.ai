@@ -26,6 +26,9 @@ ENV/
 *.log
 test-results/
 test.py
+dist/
+!scripts/dist/
+!scripts/dist/*.sh
 
 # Local config
 .env
