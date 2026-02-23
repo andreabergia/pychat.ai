@@ -1,3 +1,4 @@
+use crate::llm::provider::LlmTokenUsageTotals;
 use anyhow::{Result, anyhow, bail};
 use reqwest::header::HeaderMap;
 use std::env;
@@ -104,6 +105,16 @@ impl SessionTrace {
         self.log_single("ai.http.err", message);
     }
 
+    pub fn log_session_token_summary(&self, usage: &LlmTokenUsageTotals) {
+        self.log_single(
+            "ai.usage",
+            &format!(
+                "session tokens in={} out={} total={}",
+                usage.input_tokens, usage.output_tokens, usage.total_tokens
+            ),
+        );
+    }
+
     fn log_lines(&self, kind: &str, text: &str) {
         if text.is_empty() {
             self.log_single(kind, "<empty>");
@@ -190,6 +201,7 @@ fn resolve_trace_dir(xdg_state_home: Option<&str>, home_dir: Option<&Path>) -> R
 #[cfg(test)]
 mod tests {
     use super::{SessionTrace, resolve_trace_dir};
+    use crate::llm::provider::LlmTokenUsageTotals;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -240,6 +252,25 @@ mod tests {
         assert!(first_line.starts_with("[20"));
         assert!(first_line.contains("T"));
         assert!(first_line.contains("Z] [py.out     ] value"));
+    }
+
+    #[test]
+    fn trace_logs_session_token_summary() {
+        let dir = tempdir().expect("tempdir");
+        let trace = SessionTrace::create_in_temp_dir("abc", dir.path()).expect("trace");
+        let path = trace.file_path().to_path_buf();
+
+        trace.log_session_token_summary(&LlmTokenUsageTotals {
+            input_tokens: 12,
+            output_tokens: 5,
+            total_tokens: 17,
+        });
+
+        let content = fs::read_to_string(path).expect("read trace");
+        assert!(
+            content.contains("[ai.usage   ] session tokens in=12 out=5 total=17"),
+            "trace content:\n{content}"
+        );
     }
 
     #[cfg(unix)]
