@@ -26,6 +26,17 @@ pub async fn run(args: CliArgs) -> Result<()> {
     };
     let python = PythonSession::initialize()?;
     let startup_message = run_startup_script_if_configured(&python, &config)?;
+    if args.smoke_python {
+        let version_repr = python
+            .eval_expr("__import__('sys').version.split()[0]")?
+            .value_repr;
+        if let Some(message) = startup_message {
+            println!("smoke-python: ok version={version_repr} startup={message}");
+        } else {
+            println!("smoke-python: ok version={version_repr}");
+        }
+        return Ok(());
+    }
     let session_id = generate_session_id();
     let trace = SessionTrace::create(&session_id)?;
     let http = HttpClient::new(reqwest::Client::new()).with_trace(trace.clone());
