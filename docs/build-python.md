@@ -8,9 +8,6 @@ time, which can lead to machine-specific absolute paths (for example, Homebrew P
 To make local development and CI builds reproducible, this project pins a Python version and installs a
 project-local uv-managed runtime that is used explicitly via `PYO3_PYTHON`.
 
-Phase 1 covers reproducible build inputs only. Portable packaging (`dist/`, loader path patching) is planned
-separately.
-
 ## Pinned Python workflow
 
 The pinned Python version lives in `.python-version`.
@@ -69,5 +66,5 @@ Linux:
 ldd target/debug/pychat_ai
 ```
 
-In Phase 1, absolute Python library paths may still appear in the binary. Eliminating those for portable
-distribution is Phase 2 work.
+Absolute Python library paths may still appear in the binary; the linkage checks above help inspect what the
+current build produced.
