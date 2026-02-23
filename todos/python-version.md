@@ -1,7 +1,7 @@
 ---
 id: python-version
 created_at: 2026-02-22T11:50:22.612922Z
-status: open
+status: closed
 summary: Choose Python runtime
 ---
 Goal: make embedded Python builds reproducible and packaged binaries portable across machines (starting with macOS).
