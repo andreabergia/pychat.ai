@@ -19,12 +19,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use trace::SessionTrace;
 
 pub async fn run(args: CliArgs) -> Result<()> {
+    let python = PythonSession::initialize()?;
+    if args.smoke_python {
+        let version_repr = python
+            .eval_expr("__import__('sys').version.split()[0]")?
+            .value_repr;
+        println!("smoke-python: ok version={version_repr}");
+        return Ok(());
+    }
     let config = if let Some(path) = args.config.as_deref() {
         AppConfig::load_with_path(Some(path))?
     } else {
         AppConfig::load()?
     };
-    let python = PythonSession::initialize()?;
     let startup_message = run_startup_script_if_configured(&python, &config)?;
     let session_id = generate_session_id();
     let trace = SessionTrace::create(&session_id)?;
