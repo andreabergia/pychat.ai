@@ -238,6 +238,8 @@ impl TimelineWidget for AssistantTurnWidget<'_> {
                 }
             }
 
+            render_turn_token_details(context, lines, self.turn.token_usage.as_ref());
+
             lines.push(Line::from(""));
         }
 
@@ -252,7 +254,6 @@ impl TimelineWidget for AssistantTurnWidget<'_> {
                             .style(output_token_for(OutputKind::AssistantText)),
                     )));
                 }
-                render_turn_token_total(context, lines, self.turn.token_usage.as_ref());
             }
             AssistantTurnState::CompletedError(message) => {
                 for line in split_output_lines(message) {
@@ -263,13 +264,12 @@ impl TimelineWidget for AssistantTurnWidget<'_> {
                             .style(output_token_for(OutputKind::SystemError)),
                     )));
                 }
-                render_turn_token_total(context, lines, self.turn.token_usage.as_ref());
             }
         }
     }
 }
 
-fn render_turn_token_total(
+fn render_turn_token_details(
     context: &RenderContext<'_>,
     lines: &mut Vec<Line<'static>>,
     usage: Option<&LlmTokenUsageTotals>,
@@ -281,13 +281,11 @@ fn render_turn_token_total(
         return;
     }
 
-    let total_text = if usage.total_tokens == 0 {
-        "?".to_string()
-    } else {
-        usage.total_tokens.to_string()
-    };
     lines.push(Line::from(Span::styled(
-        format!("  Tokens (turn): {total_text}"),
+        format!(
+            "  Tokens: {} in, {} out, {} total",
+            usage.input_tokens, usage.output_tokens, usage.total_tokens
+        ),
         context
             .theme
             .style(output_token_for(OutputKind::SystemInfo)),
@@ -425,7 +423,11 @@ mod tests {
                 .any(|line| line.starts_with("  <- Inspection complete:"))
         );
         assert!(lines.iter().any(|line| line == "x is an int"));
-        assert!(lines.iter().any(|line| line == "  Tokens (turn): 15"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "  Tokens: 10 in, 5 out, 15 total")
+        );
     }
 
     #[test]
@@ -443,6 +445,16 @@ mod tests {
             !without_steps
                 .iter()
                 .any(|line| line.starts_with("  <- Inspection complete:"))
+        );
+        assert!(
+            with_steps
+                .iter()
+                .any(|line| line == "  Tokens: 10 in, 5 out, 15 total")
+        );
+        assert!(
+            !without_steps
+                .iter()
+                .any(|line| line.starts_with("  Tokens: "))
         );
     }
 
@@ -496,7 +508,7 @@ mod tests {
                 .iter()
                 .any(|line| line == "Assistant request failed: boom")
         );
-        assert!(lines.iter().any(|line| line == "  Tokens (turn): 3"));
+        assert!(!lines.iter().any(|line| line.starts_with("  Tokens: ")));
     }
 
     #[test]
@@ -514,6 +526,10 @@ mod tests {
             .iter()
             .position(|line| line.starts_with("  <- Inspection complete:"))
             .expect("result line");
+        let tokens_idx = lines
+            .iter()
+            .position(|line| line.starts_with("  Tokens: "))
+            .expect("tokens line");
 
         assert!(thinking_idx > 0, "thinking line should not be first");
         assert_eq!(lines[thinking_idx - 1], "");
@@ -522,10 +538,14 @@ mod tests {
             "thinking header should precede requests"
         );
         assert!(
-            result_idx + 1 < lines.len(),
-            "result line should not be last"
+            result_idx < tokens_idx,
+            "tokens line should follow tool results"
         );
-        assert_eq!(lines[result_idx + 1], "");
+        assert!(
+            tokens_idx + 1 < lines.len(),
+            "tokens line should not be last"
+        );
+        assert_eq!(lines[tokens_idx + 1], "");
     }
 
     #[test]
