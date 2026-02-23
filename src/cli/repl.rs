@@ -288,7 +288,7 @@ async fn handle_key_event(
     key: KeyEvent,
 ) -> Result<()> {
     match key.code {
-        KeyCode::Tab => {
+        KeyCode::Tab | KeyCode::BackTab => {
             ui_state.mode = toggle_mode(ui_state.mode);
             ui_state.history_index = None;
         }
@@ -2281,6 +2281,16 @@ mod tests {
         let toggled = harness.buffer_snapshot();
         assert!(toggled.contains("Mode: AI Assistant"));
         assert!(harness.ui_state_view().prompt.contains("ai> "));
+
+        harness
+            .send_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE))
+            .await
+            .expect("shift-tab/backtab");
+        harness.render().expect("render after shift-tab");
+
+        let toggled_back = harness.buffer_snapshot();
+        assert!(toggled_back.contains("Mode: Python"));
+        assert!(harness.ui_state_view().prompt.contains("py> "));
     }
 
     #[cfg(feature = "test-support")]
