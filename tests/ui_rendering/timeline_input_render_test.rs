@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::ui_rendering::common::{
-    input_snapshot, new_harness, press_ctrl_j, press_ctrl_t, press_tab, status_snapshot,
-    submit_line, timeline_snapshot, type_text,
+    input_snapshot, motd_snapshot, new_harness, press_ctrl_j, press_ctrl_t, press_tab,
+    status_snapshot, submit_line, timeline_snapshot, type_text,
 };
 
 #[tokio::test]
@@ -10,13 +10,20 @@ async fn initial_render_shows_welcome_and_status_with_session() -> Result<()> {
     let mut harness = new_harness("phase3-welcome", 100, 24)?;
     harness.render()?;
 
-    let timeline = timeline_snapshot(&harness)?;
-    assert!(timeline.contains("Welcome to PyChat.ai"));
+    let motd = motd_snapshot(&harness)?;
+    assert!(motd.contains("PyChat.ai"));
+    assert!(motd.contains("TAB"));
 
     let status = status_snapshot(&harness)?;
     assert!(status.contains("Mode: Python"));
-    assert!(status.contains("Show agent thinking: On (Ctrl-T)"));
-    assert!(status.contains("PyChat.ai | Tokens: 0 | Session: phase3-welcome"));
+    assert!(status.contains("Thinking: On"));
+    assert!(status.contains("Session: phase3-welcome"));
+    assert!(status.contains("Tokens: 0"));
+
+    submit_line(&mut harness, "x = 1").await?;
+    harness.render()?;
+    let motd_after = motd_snapshot(&harness)?;
+    assert!(motd_after.contains("PyChat.ai"));
 
     Ok(())
 }

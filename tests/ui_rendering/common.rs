@@ -109,6 +109,11 @@ pub fn timeline_snapshot(harness: &UiHarness) -> Result<String> {
     Ok(region_text(harness, regions.timeline))
 }
 
+pub fn motd_snapshot(harness: &UiHarness) -> Result<String> {
+    let regions = harness.regions()?;
+    Ok(region_text(harness, regions.motd))
+}
+
 pub fn input_snapshot(harness: &UiHarness) -> Result<String> {
     let regions = harness.regions()?;
     Ok(region_text(harness, regions.input))
