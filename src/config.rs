@@ -76,6 +76,12 @@ pub enum ThemeToken {
     SystemInfo,
     SystemError,
     Status,
+    Motd,
+    MotdKey,
+    MotdBrand,
+    FooterPrimary,
+    FooterSecondary,
+    FooterAccent,
     InputBlock,
 }
 
@@ -100,6 +106,12 @@ impl FromStr for ThemeToken {
             "system_info" => Ok(Self::SystemInfo),
             "system_error" => Ok(Self::SystemError),
             "status" => Ok(Self::Status),
+            "motd" => Ok(Self::Motd),
+            "motd_key" => Ok(Self::MotdKey),
+            "motd_brand" => Ok(Self::MotdBrand),
+            "footer_primary" => Ok(Self::FooterPrimary),
+            "footer_secondary" => Ok(Self::FooterSecondary),
+            "footer_accent" => Ok(Self::FooterAccent),
             "input_block" => Ok(Self::InputBlock),
             _ => Err(format!("unknown token '{value}'")),
         }
@@ -107,7 +119,7 @@ impl FromStr for ThemeToken {
 }
 
 impl ThemeToken {
-    pub const fn all() -> [Self; 17] {
+    pub const fn all() -> [Self; 23] {
         [
             Self::PythonPrompt,
             Self::AssistantPrompt,
@@ -125,6 +137,12 @@ impl ThemeToken {
             Self::SystemInfo,
             Self::SystemError,
             Self::Status,
+            Self::Motd,
+            Self::MotdKey,
+            Self::MotdBrand,
+            Self::FooterPrimary,
+            Self::FooterSecondary,
+            Self::FooterAccent,
             Self::InputBlock,
         ]
     }

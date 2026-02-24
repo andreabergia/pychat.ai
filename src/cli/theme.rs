@@ -80,6 +80,20 @@ fn default_preset_style(token: ThemeToken) -> Style {
             .add_modifier(Modifier::ITALIC),
         ThemeToken::AssistantProgressResult => Style::default().fg(Color::Rgb(138, 138, 138)),
         ThemeToken::SystemInfo | ThemeToken::Status => Style::default().fg(Color::Rgb(86, 95, 137)),
+        ThemeToken::Motd => Style::default().fg(Color::Rgb(150, 160, 205)),
+        ThemeToken::MotdKey => Style::default()
+            .fg(Color::Rgb(255, 203, 107))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::MotdBrand => Style::default()
+            .fg(Color::Rgb(192, 202, 245))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::FooterPrimary => Style::default()
+            .fg(Color::Rgb(192, 202, 245))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::FooterSecondary => Style::default().fg(Color::Rgb(120, 130, 175)),
+        ThemeToken::FooterAccent => Style::default()
+            .fg(Color::Rgb(158, 206, 106))
+            .add_modifier(Modifier::BOLD),
         ThemeToken::SystemError => Style::default()
             .fg(Color::Rgb(247, 118, 142))
             .add_modifier(Modifier::BOLD),
@@ -116,6 +130,20 @@ fn light_preset_style(token: ThemeToken) -> Style {
             .add_modifier(Modifier::ITALIC),
         ThemeToken::AssistantProgressResult => Style::default().fg(Color::Rgb(80, 90, 110)),
         ThemeToken::SystemInfo | ThemeToken::Status => Style::default().fg(Color::Rgb(36, 70, 120)),
+        ThemeToken::Motd => Style::default().fg(Color::Rgb(70, 95, 130)),
+        ThemeToken::MotdKey => Style::default()
+            .fg(Color::Rgb(188, 76, 0))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::MotdBrand => Style::default()
+            .fg(Color::Rgb(9, 105, 218))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::FooterPrimary => Style::default()
+            .fg(Color::Rgb(36, 70, 120))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::FooterSecondary => Style::default().fg(Color::Rgb(90, 100, 120)),
+        ThemeToken::FooterAccent => Style::default()
+            .fg(Color::Rgb(5, 80, 40))
+            .add_modifier(Modifier::BOLD),
         ThemeToken::SystemError => Style::default()
             .fg(Color::Rgb(176, 0, 32))
             .add_modifier(Modifier::BOLD),
@@ -156,6 +184,20 @@ fn high_contrast_preset_style(token: ThemeToken) -> Style {
         ThemeToken::SystemInfo | ThemeToken::Status => {
             Style::default().fg(Color::Rgb(173, 216, 230))
         }
+        ThemeToken::Motd => Style::default().fg(Color::Rgb(220, 220, 220)),
+        ThemeToken::MotdKey => Style::default()
+            .fg(Color::Rgb(255, 255, 0))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::MotdBrand => Style::default()
+            .fg(Color::Rgb(173, 216, 230))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::FooterPrimary => Style::default()
+            .fg(Color::Rgb(255, 255, 255))
+            .add_modifier(Modifier::BOLD),
+        ThemeToken::FooterSecondary => Style::default().fg(Color::Rgb(173, 216, 230)),
+        ThemeToken::FooterAccent => Style::default()
+            .fg(Color::Rgb(0, 255, 127))
+            .add_modifier(Modifier::BOLD),
         ThemeToken::SystemError => Style::default()
             .fg(Color::Rgb(255, 64, 64))
             .add_modifier(Modifier::BOLD),
