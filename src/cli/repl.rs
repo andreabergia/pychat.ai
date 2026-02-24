@@ -35,9 +35,12 @@ const TIMELINE_SCROLL_STEP: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 struct UiLayout {
+    timeline_banner: Rect,
     timeline: Rect,
     input: Rect,
-    status: Rect,
+    footer_top: Rect,
+    footer_bottom: Rect,
+    footer: Rect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -895,14 +898,27 @@ fn ui_layout(area: Rect, current_input: &str) -> UiLayout {
         .constraints([
             Constraint::Min(1),
             Constraint::Length(input_height),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(area);
 
+    let timeline_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(chunks[0]);
+
+    let footer_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(chunks[2]);
+
     UiLayout {
-        timeline: chunks[0],
+        timeline_banner: timeline_chunks[0],
+        timeline: timeline_chunks[1],
         input: chunks[1],
-        status: chunks[2],
+        footer_top: footer_chunks[0],
+        footer_bottom: footer_chunks[1],
+        footer: chunks[2],
     }
 }
 
@@ -937,6 +953,8 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
     let max_input_lines = 6usize;
     let input_visible_lines = input_line_count.min(max_input_lines);
     let layout = ui_layout(frame.area(), ui_state.current_input());
+
+    render_sticky_motd(frame, ui_state, layout.timeline_banner);
 
     let lines = ui_state
         .timeline
@@ -991,17 +1009,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .scroll((input_scroll, 0));
     frame.render_widget(input_widget, layout.input);
 
-    let mode_text = mode_status_text(ui_state.mode, ui_state.show_assistant_steps);
-    let status_left = Paragraph::new(mode_text).style(ui_state.theme.style(ThemeToken::Status));
-    frame.render_widget(status_left, layout.status);
-
-    let status_right = Paragraph::new(status_right_text(
-        &ui_state.session_id,
-        &ui_state.session_token_usage,
-    ))
-    .style(ui_state.theme.style(ThemeToken::Status))
-    .alignment(ratatui::layout::Alignment::Right);
-    frame.render_widget(status_right, layout.status);
+    render_footer(frame, ui_state, &layout);
 
     let (cursor_row, cursor_col) = input_cursor_position(ui_state.current_input());
     let cursor_row = cursor_row.saturating_sub(usize::from(input_scroll));
@@ -1017,6 +1025,53 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, ui_state: &UiState) {
         .saturating_add(1)
         .saturating_add(u16::try_from(cursor_row).unwrap_or(u16::MAX));
     frame.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn render_sticky_motd(frame: &mut ratatui::Frame<'_>, ui_state: &UiState, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let line = sticky_motd_line(
+        &ui_state.theme,
+        ui_state.mode,
+        ui_state.show_assistant_steps,
+        usize::from(area.width),
+    );
+    let widget = Paragraph::new(line);
+    frame.render_widget(widget, area);
+}
+
+fn render_footer(frame: &mut ratatui::Frame<'_>, ui_state: &UiState, layout: &UiLayout) {
+    if layout.footer.width == 0 || layout.footer.height == 0 {
+        return;
+    }
+
+    let top = Paragraph::new(footer_top_line(
+        &ui_state.theme,
+        ui_state.mode,
+        ui_state.show_assistant_steps,
+        usize::from(layout.footer_top.width),
+    ));
+    frame.render_widget(top, layout.footer_top);
+
+    let right_text = footer_bottom_right_text(&ui_state.session_token_usage);
+    let right_width = right_text.chars().count().saturating_add(1);
+    let right_width = right_width.min(usize::from(layout.footer_bottom.width));
+    let right_width = u16::try_from(right_width).unwrap_or(u16::MAX);
+    let bottom_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(right_width)])
+        .split(layout.footer_bottom);
+
+    let left_available = usize::from(bottom_chunks[0].width);
+    let left_text = footer_bottom_left_text(&ui_state.session_id, left_available);
+    let left = Paragraph::new(left_text).style(ui_state.theme.style(ThemeToken::FooterSecondary));
+    frame.render_widget(left, bottom_chunks[0]);
+
+    let right = Paragraph::new(right_text)
+        .style(ui_state.theme.style(ThemeToken::FooterAccent))
+        .alignment(ratatui::layout::Alignment::Right);
+    frame.render_widget(right, bottom_chunks[1]);
 }
 
 fn prompt_token_for(mode: Mode, command_input: bool) -> ThemeToken {
@@ -1218,20 +1273,135 @@ fn toggle_mode(mode: Mode) -> Mode {
     }
 }
 
-fn mode_status_text(mode: Mode, show_assistant_steps: bool) -> String {
-    let mode_text = match mode {
+fn sticky_motd_line(
+    theme: &Theme,
+    mode: Mode,
+    show_assistant_steps: bool,
+    width: usize,
+) -> Line<'static> {
+    let steps_text = if show_assistant_steps { "On" } else { "Off" };
+    let mode_hint = match mode {
+        Mode::Python => "switch to AI",
+        Mode::Assistant => "switch to Python",
+    };
+    let action_hint = match mode {
+        Mode::Python => "run Python",
+        Mode::Assistant => "ask assistant",
+    };
+
+    let mut specs = vec![
+        (ThemeToken::MotdBrand, "PyChat.ai".to_string()),
+        (ThemeToken::Motd, "  ".to_string()),
+        (ThemeToken::MotdKey, "TAB".to_string()),
+        (ThemeToken::Motd, format!(": {mode_hint}  ")),
+        (ThemeToken::MotdKey, "Enter".to_string()),
+        (ThemeToken::Motd, format!(": {action_hint}  ")),
+        (ThemeToken::MotdKey, "/help".to_string()),
+        (ThemeToken::Motd, ": commands  ".to_string()),
+        (ThemeToken::MotdKey, "Ctrl-T".to_string()),
+        (ThemeToken::Motd, format!(": thinking {steps_text}")),
+    ];
+
+    let mut text = specs.iter().map(|(_, s)| s.as_str()).collect::<String>();
+    if text.chars().count() > width {
+        specs.retain(|(_, s)| s != "/help" && s != ": commands  ");
+        text = specs.iter().map(|(_, s)| s.as_str()).collect::<String>();
+    }
+    if text.chars().count() > width {
+        for (_, value) in &mut specs {
+            *value = value.replace("switch to Python", "Py mode");
+            *value = value.replace("switch to AI", "AI mode");
+            *value = value.replace("thinking", "steps");
+        }
+        text = specs.iter().map(|(_, s)| s.as_str()).collect::<String>();
+    }
+    if text.chars().count() > width {
+        text = truncate_with_ellipsis(&text, width);
+        return Line::from(Span::styled(text, theme.style(ThemeToken::Motd)));
+    }
+
+    Line::from(
+        specs
+            .into_iter()
+            .map(|(token, text)| Span::styled(text, theme.style(token)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn footer_top_line(
+    theme: &Theme,
+    mode: Mode,
+    show_assistant_steps: bool,
+    width: usize,
+) -> Line<'static> {
+    let steps = if show_assistant_steps { "On" } else { "Off" };
+    let mode_full = match mode {
         Mode::Python => "Mode: Python",
         Mode::Assistant => "Mode: AI Assistant",
     };
-    let steps_text = if show_assistant_steps { "On" } else { "Off" };
-    format!("{mode_text} | Show agent thinking: {steps_text} (Ctrl-T)")
+    let mode_short = match mode {
+        Mode::Python => "M: Py",
+        Mode::Assistant => "M: AI",
+    };
+    let mut line = format!("{mode_full}  |  Thinking: {steps}  |  Ctrl-T");
+    if line.chars().count() > width {
+        line = format!("{mode_short} | T: {steps} | Ctrl-T");
+    }
+    if line.chars().count() > width {
+        line = truncate_with_ellipsis(&line, width);
+    }
+
+    let parts = line.split(" | ").collect::<Vec<_>>();
+    let mut spans = Vec::new();
+    for (idx, part) in parts.iter().enumerate() {
+        let token =
+            if part.contains("Ctrl-T") || part.contains("Thinking") || part.starts_with("T:") {
+                ThemeToken::FooterAccent
+            } else {
+                ThemeToken::FooterPrimary
+            };
+        spans.push(Span::styled((*part).to_string(), theme.style(token)));
+        if idx + 1 < parts.len() {
+            spans.push(Span::styled(
+                " | ".to_string(),
+                theme.style(ThemeToken::FooterSecondary),
+            ));
+        }
+    }
+    Line::from(spans)
 }
 
-fn status_right_text(session_id: &str, usage: &LlmTokenUsageTotals) -> String {
-    format!(
-        "PyChat.ai | Tokens: {} | Session: {session_id}",
-        usage.total_tokens
-    )
+fn footer_bottom_left_text(session_id: &str, width: usize) -> String {
+    let full = format!("Session: {session_id}");
+    if full.chars().count() <= width {
+        return full;
+    }
+    let short = format!("S: {session_id}");
+    if short.chars().count() <= width {
+        return short;
+    }
+    truncate_with_ellipsis(&short, width)
+}
+
+fn footer_bottom_right_text(usage: &LlmTokenUsageTotals) -> String {
+    format!("PyChat.ai | Tokens: {}", usage.total_tokens)
+}
+
+fn truncate_with_ellipsis(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    if width <= 3 {
+        return ".".repeat(width);
+    }
+    let keep = width.saturating_sub(3);
+    let mut out = text.chars().take(keep).collect::<String>();
+    out.push_str("...");
+    out
 }
 
 fn format_session_token_usage(usage: &LlmTokenUsageTotals) -> String {
@@ -1320,6 +1490,7 @@ pub mod test_support {
 
     #[derive(Debug, Clone, Copy)]
     pub struct UiRegions {
+        pub motd: Rect,
         pub timeline: Rect,
         pub input: Rect,
         pub status: Rect,
@@ -1422,9 +1593,10 @@ pub mod test_support {
             let area = Rect::new(0, 0, size.width, size.height);
             let layout = ui_layout(area, self.ui_state.current_input());
             Ok(UiRegions {
+                motd: layout.timeline_banner,
                 timeline: layout.timeline,
                 input: layout.input,
-                status: layout.status,
+                status: layout.footer,
             })
         }
 
@@ -1561,14 +1733,16 @@ pub mod test_support {
 mod tests {
     use super::{
         AppState, Mode, UiState, append_newline_with_indent, area_contains_point, execute_command,
-        format_history_output, format_session_token_usage, format_tool_error_line,
-        format_tool_request_line, format_tool_result_line, handle_mouse_event,
-        input_cursor_position, is_safe_source_target, last_line_indent, mode_status_text,
-        output_trace_kind, preview_text, prompt_for, render_include_command_result,
-        resolve_color_enabled_with, session_closed_message, status_right_text, timeline_max_scroll,
-        timeline_paragraph_scroll, toggle_mode,
+        footer_bottom_left_text, footer_bottom_right_text, footer_top_line, format_history_output,
+        format_session_token_usage, format_tool_error_line, format_tool_request_line,
+        format_tool_result_line, handle_mouse_event, input_cursor_position, is_safe_source_target,
+        last_line_indent, output_trace_kind, preview_text, prompt_for,
+        render_include_command_result, resolve_color_enabled_with, session_closed_message,
+        sticky_motd_line, timeline_max_scroll, timeline_paragraph_scroll, toggle_mode,
+        truncate_with_ellipsis,
     };
     use crate::agent::AgentConfig;
+    use crate::cli::theme::Theme;
     use crate::cli::timeline::OutputKind;
     use crate::config::ThemeConfig;
     use crate::llm::provider::LlmTokenUsageTotals;
@@ -1646,38 +1820,45 @@ mod tests {
     }
 
     #[test]
-    fn mode_status_text_includes_step_toggle_value() {
+    fn sticky_motd_line_is_mode_aware() {
+        let theme = Theme::new(false);
+        let py = sticky_motd_line(&theme, Mode::Python, true, 200).to_string();
+        let ai = sticky_motd_line(&theme, Mode::Assistant, false, 200).to_string();
+        assert!(py.contains("switch to AI"));
+        assert!(py.contains("thinking On"));
+        assert!(ai.contains("switch to Python"));
+        assert!(ai.contains("thinking Off"));
+    }
+
+    #[test]
+    fn footer_top_line_compacts_for_narrow_width() {
+        let theme = Theme::new(false);
+        let wide = footer_top_line(&theme, Mode::Assistant, true, 120).to_string();
+        let narrow = footer_top_line(&theme, Mode::Assistant, true, 24).to_string();
+        assert!(wide.contains("Mode: AI Assistant"));
+        assert!(narrow.contains("Ctrl-T"));
+        assert!(narrow.len() <= 24);
+    }
+
+    #[test]
+    fn footer_bottom_text_helpers_include_session_and_tokens() {
+        assert_eq!(footer_bottom_left_text("abc123", 80), "Session: abc123");
         assert_eq!(
-            mode_status_text(Mode::Python, true),
-            "Mode: Python | Show agent thinking: On (Ctrl-T)"
-        );
-        assert_eq!(
-            mode_status_text(Mode::Assistant, false),
-            "Mode: AI Assistant | Show agent thinking: Off (Ctrl-T)"
+            footer_bottom_right_text(&LlmTokenUsageTotals {
+                input_tokens: 12,
+                output_tokens: 34,
+                total_tokens: 46,
+            }),
+            "PyChat.ai | Tokens: 46"
         );
     }
 
     #[test]
-    fn status_right_text_includes_session_id() {
-        assert_eq!(
-            status_right_text("abc123", &LlmTokenUsageTotals::default()),
-            "PyChat.ai | Tokens: 0 | Session: abc123"
-        );
-    }
-
-    #[test]
-    fn status_right_text_shows_session_token_total_only() {
-        assert_eq!(
-            status_right_text(
-                "abc123",
-                &LlmTokenUsageTotals {
-                    input_tokens: 12,
-                    output_tokens: 34,
-                    total_tokens: 46,
-                }
-            ),
-            "PyChat.ai | Tokens: 46 | Session: abc123"
-        );
+    fn truncate_with_ellipsis_handles_small_widths() {
+        assert_eq!(truncate_with_ellipsis("abcdef", 0), "");
+        assert_eq!(truncate_with_ellipsis("abcdef", 2), "..");
+        assert_eq!(truncate_with_ellipsis("abcdef", 6), "abcdef");
+        assert_eq!(truncate_with_ellipsis("abcdef", 5), "ab...");
     }
 
     #[test]

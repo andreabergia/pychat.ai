@@ -105,13 +105,6 @@ impl Timeline {
         theme: &Theme,
         show_assistant_steps: bool,
     ) -> Vec<Line<'static>> {
-        if self.entries.is_empty() {
-            return vec![Line::from(Span::styled(
-                "Welcome to PyChat.ai. TAB toggles Python/AI mode. Ctrl-T toggles showing agent thinking.",
-                theme.style(output_token_for(OutputKind::SystemInfo)),
-            ))];
-        }
-
         let context = RenderContext {
             theme,
             show_assistant_steps,
@@ -384,10 +377,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_timeline_renders_welcome_message() {
+    fn empty_timeline_renders_no_lines() {
         let lines = text_lines(Timeline::new().render_lines(&Theme::new(false), true));
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("Welcome to PyChat.ai. TAB toggles Python/AI mode."));
+        assert!(lines.is_empty());
     }
 
     #[test]
