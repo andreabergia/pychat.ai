@@ -1,11 +1,15 @@
 # PyChat.ai
 
-PyChat.ai is an interactive Python REPL, with a built-in LLM assistant that can inspect your live runtime state.
+PyChat.ai is an interactive Python REPL that embeds an LLM agentic loop, which has access to the Python environment and can query a value or run code.
+
+![Screenshot of PyChat.ai terminal UI showing Python + AI interaction](docs/screenshot.png)
+
+Please see the accompanying [blog post](https://andreabergia.com/blog/2026/02/pychat-ai/) for more information.
 
 ## Important
 
-- This is an **MVP/prototype** at the moment, to explore the idea. It is not a full product
-- This is **very insecure** - the LLM can run arbitrary code! Do **not** use it outside of a sandbox!
+- This is a **prototype** at the moment, to explore the idea. It is not a full product!
+- This is **very insecure** - the model can run arbitrary Python code, so it can read your file system or use the network, which makes it susceptible to the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). Please don't use this outside of a container or virtual machine!
 
 ## What You Can Do
 
@@ -23,14 +27,15 @@ PyChat.ai is an interactive Python REPL, with a built-in LLM assistant that can 
 ### Requirements
 
 - Rust toolchain
-- `uv` (for the pinned Python workflow used in CI)
-- Python installed locally (optional if using the pinned `uv` workflow)
-- `GEMINI_API_KEY` if you want assistant responses
+- either `uv` for the pinned Python workflow used in CI, or Python installed locally
+- `GEMINI_API_KEY` if you want assistant responses. You can get one, which has a free tier, [Google AI Studio](https://aistudio.google.com/app/api-keys)
 
-### Reproducible Build / Test Environment (Pinned Python)
+### Reproducible Checks (Pinned Python, Optional)
 
-CI uses a pinned Python version from `.python-version` installed via `uv`, and local development can use the
-same workflow.
+CI uses a pinned Python version from `.python-version` installed via `uv`.
+
+Use this workflow if you want reproducible local checks (`fmt`, `clippy`, `test`) with the same Python version as CI.
+If you just want to try the app, you can skip this section and use `cargo run` below.
 
 Install the pinned Python:
 
@@ -52,6 +57,10 @@ scripts/dev/pyo3-config-check.sh
 
 ### Run
 
+Remember - this is **insecure**! Do this in a container or vm!
+
+The commands below are the simplest local run path. They use your local Python/PyO3 setup (unless you set `PYO3_PYTHON` yourself).
+
 ```bash
 cargo run
 ```
@@ -71,34 +80,24 @@ You can also set `GEMINI_API_KEY` in `.env`.
 - Type `/help` to see commands
 - Type `exit` or `quit` to leave
 
-## Configuration
-
-Optional config path resolution:
-
-1. `--config /path/to/config.toml`
-2. `$XDG_CONFIG_HOME/pychat.ai/config.toml`
-3. `~/.config/pychat.ai/config.toml`
-
-Startup script behavior:
-
-- Without `--config`, PyChat.ai also auto-runs `<config-dir>/startup.py` when present.
-- If `startup_file` is set in config, that script is executed before REPL startup.
-
 ## Docs
 
 - User guide: `docs/user-guide.md`
 - Config reference: `docs/config-reference.md`
 - Command reference: `docs/command-reference.md`
 - Contributing: `docs/contributing.md`
-- Architecture plan: `docs/architecture.md`
+- Architecture: `docs/architecture.md`
 
-## CI
+## Target Users
 
-GitHub Actions runs the pinned-Python checks workflow on this matrix:
+- Python learners
+- Data scientists
+- Developers working interactively
+- Anyone who frequently uses Python REPL
 
-- `ubuntu-latest`
-- `macos-latest`
+## Use Cases
 
-Both jobs install `uv`, install the pinned Python from `.python-version`, and run
-`scripts/dev/checks-with-pinned-python.sh`. They also both check the binary linkage.
-
+- Learning Python: understand objects/functions interactively, explore built-ins
+- Debugging: inspect variable state, understand exceptions, check assumptions
+- Data exploration: inspect data structures, summarize collections
+- Interactive experimentation: prototype ideas, verify behavior, explore APIs
