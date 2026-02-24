@@ -1039,13 +1039,20 @@ fn render_footer(frame: &mut ratatui::Frame<'_>, ui_state: &UiState, layout: &Ui
         .split(layout.footer);
 
     let left_available = usize::from(bottom_chunks[0].width);
-    let left_text = footer_left_text(ui_state.mode, ui_state.show_assistant_steps, left_available);
-    let left = Paragraph::new(left_text).style(ui_state.theme.style(ThemeToken::FooterPrimary));
+    let left = Paragraph::new(footer_left_line(
+        &ui_state.theme,
+        ui_state.mode,
+        ui_state.show_assistant_steps,
+        left_available,
+    ));
     frame.render_widget(left, bottom_chunks[0]);
 
-    let right = Paragraph::new(right_text)
-        .style(ui_state.theme.style(ThemeToken::FooterSecondary))
-        .alignment(ratatui::layout::Alignment::Right);
+    let right = Paragraph::new(footer_right_line(
+        &ui_state.theme,
+        &ui_state.session_token_usage,
+        usize::from(bottom_chunks[1].width),
+    ))
+    .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(right, bottom_chunks[1]);
 }
 
@@ -1264,6 +1271,80 @@ fn footer_left_text(mode: Mode, show_assistant_steps: bool, width: usize) -> Str
 
 fn footer_right_text(usage: &LlmTokenUsageTotals) -> String {
     format!("Questions? /help | Tokens: {}", usage.total_tokens)
+}
+
+fn footer_left_line(
+    theme: &Theme,
+    mode: Mode,
+    show_assistant_steps: bool,
+    width: usize,
+) -> Line<'static> {
+    let text = footer_left_text(mode, show_assistant_steps, width);
+    let full = match mode {
+        Mode::Python => {
+            if show_assistant_steps {
+                "Python | Thinking: On"
+            } else {
+                "Python | Thinking: Off"
+            }
+        }
+        Mode::Assistant => {
+            if show_assistant_steps {
+                "AI Assistant | Thinking: On"
+            } else {
+                "AI Assistant | Thinking: Off"
+            }
+        }
+    };
+    if text != full {
+        return Line::from(Span::styled(text, theme.style(ThemeToken::FooterPrimary)));
+    }
+
+    let (mode_text, steps) = match mode {
+        Mode::Python => ("Python", if show_assistant_steps { "On" } else { "Off" }),
+        Mode::Assistant => (
+            "AI Assistant",
+            if show_assistant_steps { "On" } else { "Off" },
+        ),
+    };
+
+    Line::from(vec![
+        Span::styled(
+            mode_text.to_string(),
+            theme.style(ThemeToken::FooterPrimary),
+        ),
+        Span::styled(" | ".to_string(), theme.style(ThemeToken::FooterSecondary)),
+        Span::styled(
+            "Thinking: ".to_string(),
+            theme.style(ThemeToken::FooterSecondary),
+        ),
+        Span::styled(steps.to_string(), theme.style(ThemeToken::FooterAccent)),
+    ])
+}
+
+fn footer_right_line(theme: &Theme, usage: &LlmTokenUsageTotals, width: usize) -> Line<'static> {
+    let text = footer_right_text(usage);
+    let full = format!("Questions? /help | Tokens: {}", usage.total_tokens);
+    if text.chars().count() > width || text != full {
+        return Line::from(Span::styled(text, theme.style(ThemeToken::FooterSecondary)));
+    }
+
+    Line::from(vec![
+        Span::styled(
+            "Questions? ".to_string(),
+            theme.style(ThemeToken::FooterSecondary),
+        ),
+        Span::styled("/help".to_string(), theme.style(ThemeToken::FooterAccent)),
+        Span::styled(" | ".to_string(), theme.style(ThemeToken::FooterSecondary)),
+        Span::styled(
+            "Tokens: ".to_string(),
+            theme.style(ThemeToken::FooterSecondary),
+        ),
+        Span::styled(
+            usage.total_tokens.to_string(),
+            theme.style(ThemeToken::FooterAccent),
+        ),
+    ])
 }
 
 fn input_hint_for_empty(mode: Mode) -> String {

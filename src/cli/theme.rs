@@ -85,14 +85,12 @@ fn default_preset_style(token: ThemeToken) -> Style {
             .fg(Color::Rgb(255, 203, 107))
             .add_modifier(Modifier::BOLD),
         ThemeToken::MotdBrand => Style::default()
-            .fg(Color::Rgb(192, 202, 245))
+            .fg(Color::Rgb(92, 170, 255))
             .add_modifier(Modifier::BOLD),
-        ThemeToken::FooterPrimary => Style::default()
-            .fg(Color::Rgb(192, 202, 245))
-            .add_modifier(Modifier::BOLD),
-        ThemeToken::FooterSecondary => Style::default().fg(Color::Rgb(120, 130, 175)),
+        ThemeToken::FooterPrimary => Style::default().fg(Color::Rgb(166, 176, 216)),
+        ThemeToken::FooterSecondary => Style::default().fg(Color::Rgb(105, 115, 155)),
         ThemeToken::FooterAccent => Style::default()
-            .fg(Color::Rgb(158, 206, 106))
+            .fg(Color::Rgb(140, 196, 255))
             .add_modifier(Modifier::BOLD),
         ThemeToken::SystemError => Style::default()
             .fg(Color::Rgb(247, 118, 142))
