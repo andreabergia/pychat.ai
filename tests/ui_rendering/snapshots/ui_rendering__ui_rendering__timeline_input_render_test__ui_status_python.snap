@@ -2,5 +2,4 @@
 source: tests/ui_rendering/timeline_input_render_test.rs
 expression: status_snapshot(&harness)?
 ---
-Mode: Python  |  Thinking: On  |  Ctrl-T
-Session: phase3-snapshot                                                       PyChat.ai | Tokens: 0
+Python | Thinking: On                                                   Questions? /help | Tokens: 0

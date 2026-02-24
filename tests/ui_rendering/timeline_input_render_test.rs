@@ -11,19 +11,18 @@ async fn initial_render_shows_welcome_and_status_with_session() -> Result<()> {
     harness.render()?;
 
     let motd = motd_snapshot(&harness)?;
-    assert!(motd.contains("PyChat.ai"));
-    assert!(motd.contains("TAB"));
+    assert!(motd.contains("PyChat.AI"));
+    assert!(!motd.contains("TAB"));
 
     let status = status_snapshot(&harness)?;
-    assert!(status.contains("Mode: Python"));
-    assert!(status.contains("Thinking: On"));
-    assert!(status.contains("Session: phase3-welcome"));
+    assert!(status.contains("Python | Thinking: On"));
+    assert!(status.contains("Questions? /help"));
     assert!(status.contains("Tokens: 0"));
 
     submit_line(&mut harness, "x = 1").await?;
     harness.render()?;
     let motd_after = motd_snapshot(&harness)?;
-    assert!(motd_after.contains("PyChat.ai"));
+    assert!(motd_after.contains("PyChat.AI"));
 
     Ok(())
 }
